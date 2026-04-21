@@ -1,0 +1,157 @@
+{% extends 'base.html' %}
+{% block title %}Nueva búsqueda — AlertaTV{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-8 col-xl-6">
+
+<div class="d-flex align-items-center gap-2 mb-1">
+  <a href="/dashboard" class="btn btn-sm btn-outline-secondary py-0 px-2"><i class="bi bi-chevron-left"></i></a>
+  <div class="page-title">Nueva búsqueda</div>
+</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">
+  Configura las palabras a detectar, el período y cómo recibir los resultados.
+</p>
+
+<form method="post">
+
+  <!-- Nombre -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Identificación</div>
+    <div>
+      <label class="form-label">Nombre de la búsqueda</label>
+      <input type="text" name="name" class="form-control"
+             placeholder="Ej: Menciones al presidente" required autofocus>
+    </div>
+  </div>
+
+  <!-- Palabras -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Palabras clave</div>
+    <div class="mb-3">
+      <label class="form-label">
+        Palabras o frases a detectar
+        <span style="color:var(--muted)">(una por línea o separadas por coma)</span>
+      </label>
+      <textarea name="keywords" class="form-control" rows="4"
+                style="font-family:monospace"
+                placeholder="presidente&#10;economía&#10;terremoto" required></textarea>
+    </div>
+
+    <!-- Switch fonética/precisa -->
+    <div class="d-flex align-items-start gap-3 p-3 rounded"
+         style="background:#070d1a;border:1px solid var(--border)">
+      <div class="form-check form-switch mb-0 mt-1" style="min-width:70px">
+        <input class="form-check-input" type="checkbox" name="phonetic" id="sw_phonetic"
+               role="switch" style="width:2.75em;height:1.4em;cursor:pointer">
+      </div>
+      <div>
+        <div class="fw-semibold" id="ph_label">Búsqueda precisa</div>
+        <div style="font-size:.8rem;color:var(--text2);margin-top:3px" id="ph_desc">
+          <span id="d_off">
+            <span class="type-exact me-1"><i class="bi bi-cursor-text"></i></span>
+            Coincidencia exacta, tolerando variaciones de acentos y mayúsculas.
+          </span>
+          <span id="d_on" style="display:none">
+            <span class="type-phonetic me-1"><i class="bi bi-soundwave"></i></span>
+            Detección por sonido — captura variaciones ortográficas (b/v, ll/y, c/z/s) y pronunciación similar en español.
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fechas -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Período de monitoreo</div>
+    <div class="row g-3">
+      <div class="col-6">
+        <label class="form-label">Fecha inicio</label>
+        <input type="date" name="date_start" class="form-control" value="{{ today }}" required>
+      </div>
+      <div class="col-6">
+        <label class="form-label">Fecha fin</label>
+        <input type="date" name="date_end" class="form-control" value="{{ today }}" required>
+      </div>
+    </div>
+  </div>
+
+  <!-- Entrega -->
+  <div class="card p-4 mb-4">
+    <div class="section-label mb-3">Entrega de reportes</div>
+    <div class="mb-4">
+      <label class="form-label">Correo para recibir reportes / alertas</label>
+      <input type="email" name="report_email" class="form-control"
+             placeholder="usuario@ejemplo.com">
+      <div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">
+        Déjalo vacío si solo quieres consultar en el dashboard.
+      </div>
+    </div>
+
+    <label class="form-label">Modo de entrega</label>
+    <div class="row g-2">
+      <div class="col-12 col-sm-4">
+        <input type="radio" class="btn-check" name="delivery_mode"
+               id="dm_imm" value="immediate">
+        <label class="btn btn-outline-secondary w-100 text-start p-3" for="dm_imm">
+          <div class="fw-semibold mb-1">
+            <i class="bi bi-bell-fill me-1" style="color:var(--red)"></i>Inmediata
+          </div>
+          <small style="color:var(--text2)">Un correo por cada detección en tiempo real</small>
+        </label>
+      </div>
+      <div class="col-12 col-sm-4">
+        <input type="radio" class="btn-check" name="delivery_mode"
+               id="dm_day" value="daily">
+        <label class="btn btn-outline-secondary w-100 text-start p-3" for="dm_day">
+          <div class="fw-semibold mb-1">
+            <i class="bi bi-calendar-day me-1" style="color:var(--amber)"></i>Diaria
+          </div>
+          <small style="color:var(--text2)">Resumen consolidado cada mañana</small>
+        </label>
+      </div>
+      <div class="col-12 col-sm-4">
+        <input type="radio" class="btn-check" name="delivery_mode"
+               id="dm_fin" value="final" checked>
+        <label class="btn btn-outline-secondary w-100 text-start p-3" for="dm_fin">
+          <div class="fw-semibold mb-1">
+            <i class="bi bi-flag-fill me-1" style="color:var(--green)"></i>Final
+          </div>
+          <small style="color:var(--text2)">Un reporte al terminar el período</small>
+        </label>
+      </div>
+    </div>
+
+    <div class="mt-3 pt-3" style="border-top:1px solid var(--border)">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="notify_telegram"
+               id="notify_tg" value="1">
+        <label class="form-check-label" for="notify_tg">
+          <i class="bi bi-telegram me-1" style="color:#2aabee"></i>
+          Notificaciones por Telegram (requiere Bot configurado en ajustes)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-primary px-4 fw-semibold">
+      <i class="bi bi-plus-lg me-1"></i>Crear búsqueda
+    </button>
+    <a href="/dashboard" class="btn btn-outline-secondary">Cancelar</a>
+  </div>
+
+</form>
+</div>
+</div>
+
+{% block scripts %}
+<script>
+const sw = document.getElementById('sw_phonetic');
+sw.addEventListener('change', () => {
+  document.getElementById('ph_label').textContent = sw.checked ? 'Búsqueda fonética' : 'Búsqueda precisa';
+  document.getElementById('d_off').style.display = sw.checked ? 'none' : '';
+  document.getElementById('d_on').style.display  = sw.checked ? ''     : 'none';
+});
+</script>
+{% endblock %}
+{% endblock %}

@@ -1,0 +1,180 @@
+{% extends 'base.html' %}
+{% block title %}Config. SMTP — AlertaTV{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7 col-xl-5">
+
+<div class="page-title mb-1">Configuración SMTP</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">
+  Servidor de correo para envío de alertas y reportes a los usuarios.
+</p>
+
+<form method="post">
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Servidor</div>
+    <div class="row g-3">
+      <div class="col-8">
+        <label class="form-label">Host SMTP</label>
+        <input type="text" name="smtp_host" class="form-control"
+               value="{{ cfg.get('smtp_host','') }}"
+               placeholder="smtp.gmail.com">
+      </div>
+      <div class="col-4">
+        <label class="form-label">Puerto</label>
+        <input type="number" name="smtp_port" class="form-control"
+               value="{{ cfg.get('smtp_port','587') }}">
+      </div>
+    </div>
+    <div class="mt-3">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" name="smtp_tls" id="smtp_tls"
+               value="1" style="width:2.5em;height:1.3em"
+               {{ 'checked' if cfg.get('smtp_tls','1') == '1' }}>
+        <label class="form-check-label ms-2" for="smtp_tls">
+          Usar TLS / STARTTLS <span style="color:var(--muted)">(recomendado)</span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Credenciales</div>
+    <div class="mb-3">
+      <label class="form-label">Usuario / correo de envío</label>
+      <input type="text" name="smtp_user" class="form-control"
+             value="{{ cfg.get('smtp_user','') }}"
+             placeholder="alertas@tudominio.com">
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Contraseña</label>
+      <input type="password" name="smtp_pass" class="form-control"
+             value="{{ cfg.get('smtp_pass','') }}">
+      <div style="font-size:.75rem;color:var(--muted);margin-top:.35rem">
+        Para Gmail usa una contraseña de aplicación, no tu contraseña normal.
+      </div>
+    </div>
+    <div>
+      <label class="form-label">Nombre del remitente (From)</label>
+      <input type="text" name="smtp_from" class="form-control"
+             value="{{ cfg.get('smtp_from','') }}"
+             placeholder="AlertaTV &lt;alertas@tudominio.com&gt;">
+    </div>
+  </div>
+
+  <!-- Telegram -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-1">Telegram Bot</div>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">
+      <i class="bi bi-telegram me-1" style="color:#2aabee"></i>
+      <strong>Paso 1:</strong> Habla con <code>@BotFather</code> en Telegram, envía <code>/newbot</code>
+      y copia el <em>token</em> que te da.<br>
+      <strong>Paso 2:</strong> Inicia conversación con tu bot (búscalo por nombre y envíale cualquier mensaje).<br>
+      <strong>Paso 3:</strong> Obtén tu Chat ID entrando a
+      <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
+      en el navegador — busca el campo <code>"id"</code> dentro de <code>"chat"</code>.
+    </p>
+    <div class="mb-3">
+      <label class="form-label">Token del Bot</label>
+      <input type="text" name="tg_token" class="form-control"
+             value="{{ cfg.get('tg_token','') }}"
+             placeholder="123456789:ABCDefgh...">
+    </div>
+    <div>
+      <label class="form-label">Chat ID</label>
+      <input type="text" name="tg_chat_id" class="form-control"
+             value="{{ cfg.get('tg_chat_id','') }}" placeholder="123456789">
+    </div>
+    <div class="mt-3 d-flex align-items-center gap-3">
+      {% if cfg.get('tg_token') and cfg.get('tg_chat_id') %}
+      <span style="font-size:.8rem;color:#2aabee">
+        <i class="bi bi-check-circle-fill me-1"></i>Telegram configurado.
+      </span>
+      {% endif %}
+      <form method="post" action="/settings/test_telegram" class="mb-0">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-send me-1" style="color:#2aabee"></i>Probar conexión
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- EPG -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-1">
+      <i class="bi bi-tv me-2" style="color:var(--accent)"></i>Guía de programación (EPG)
+    </div>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">
+      EPG obtenido de <strong>epgshare01.online</strong>, independiente de TVHeadend.
+      Se actualiza automáticamente cada 12 horas y los datos se acumulan con el tiempo.
+      <br>Las coincidencias previas a la activación del EPG mostrarán <em>sin datos</em>.
+    </p>
+
+    {% if epg_stats %}
+    <div class="mb-3">
+      <div style="font-size:.78rem;font-weight:600;color:var(--text2);margin-bottom:.4rem">Cobertura almacenada:</div>
+      <div style="display:flex;flex-direction:column;gap:.25rem">
+        {% for ch in epg_stats %}
+        <div style="font-size:.76rem;display:flex;gap:.6rem;align-items:baseline">
+          <span style="min-width:140px;color:var(--green);font-weight:600">{{ ch.channel_name }}</span>
+          <span style="color:var(--text2)">{{ ch.total }} programas</span>
+          <span style="color:var(--muted)">· {{ ch.desde[:10] }} → {{ ch.hasta[:10] }}</span>
+          <span style="color:var(--accent);font-size:.72rem">{{ ch.fuentes }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">
+      Sin datos EPG almacenados aún. Haz clic en "Actualizar EPG" para descargar.
+    </div>
+    {% endif %}
+
+    <div class="d-flex align-items-center gap-3 flex-wrap mt-2">
+      {% if cfg.get('epg_last_fetch') %}
+      <span style="font-size:.78rem;color:var(--muted)">
+        <i class="bi bi-clock me-1"></i>Última actualización: {{ cfg.get('epg_last_fetch','')[:16] }}
+      </span>
+      {% endif %}
+      <form method="post" action="/settings/epg_fetch" class="mb-0">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-arrow-repeat me-1"></i>Actualizar EPG ahora
+        </button>
+      </form>
+    </div>
+
+    <div class="mt-3 p-2 rounded" style="background:var(--card2);font-size:.74rem;color:var(--muted)">
+      <strong>epgshare01</strong> (MX1+MX2):
+      Las Estrellas · Canal 5 · Azteca Uno · Canal 4 · Azteca 7 · N+ · Imagen · ADN 40
+      <span style="color:var(--muted)">(detección automática de IDs)</span><br>
+      <strong>TVHeadend EIT</strong> (señal Megacable):
+      Imagen · ADN 40 · N+ <span style="color:var(--muted)">(requiere permiso API en TVHeadend)</span>
+    </div>
+  </div>
+
+  <!-- Preview -->
+  {% if cfg.get('smtp_host') %}
+  <div class="p-3 rounded mb-3" style="background:#0a1a0a;border:1px solid #10b98140">
+    <div style="font-size:.8rem;color:var(--green)">
+      <i class="bi bi-check-circle-fill me-2"></i>
+      SMTP configurado: <strong>{{ cfg.get('smtp_host') }}:{{ cfg.get('smtp_port','587') }}</strong>
+      · TLS: {{ 'Sí' if cfg.get('smtp_tls','1')=='1' else 'No' }}
+    </div>
+  </div>
+  {% else %}
+  <div class="p-3 rounded mb-3" style="background:#1a0a0a;border:1px solid #ef444440">
+    <div style="font-size:.8rem;color:var(--red)">
+      <i class="bi bi-exclamation-triangle-fill me-2"></i>
+      Sin servidor SMTP configurado. Los correos no se enviarán hasta configurarlo.
+    </div>
+  </div>
+  {% endif %}
+
+  <button type="submit" class="btn btn-primary px-4 fw-semibold">
+    <i class="bi bi-save me-1"></i>Guardar configuración
+  </button>
+
+</form>
+</div>
+</div>
+{% endblock %}

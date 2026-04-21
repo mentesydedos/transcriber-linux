@@ -1,0 +1,627 @@
+{% extends 'base.html' %}
+{% block title %}{{ s.name }} — AlertaTV{% endblock %}
+{% block content %}
+
+{% macro filter_inputs() %}
+{% for k in kfs %}<input type="hidden" name="kw"   value="{{ k }}">{% endfor %}
+{% for c in cfs %}<input type="hidden" name="ch"   value="{{ c }}">{% endfor %}
+{% for p in pfs %}<input type="hidden" name="prog" value="{{ p }}">{% endfor %}
+{% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
+{% if date_to   %}<input type="hidden" name="date_to"   value="{{ date_to }}">{% endif %}
+{% endmacro %}
+
+<!-- Header -->
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <a href="/dashboard" class="btn btn-sm btn-outline-secondary py-0 px-2">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+      <span class="dot dot-{{ s.status }}"></span>
+      <h4 class="mb-0 fw-bold">{{ s.name }}</h4>
+      {% if s.phonetic %}
+        <span class="type-phonetic"><i class="bi bi-soundwave me-1"></i>Fonética</span>
+      {% else %}
+        <span class="type-exact"><i class="bi bi-cursor-text me-1"></i>Precisa</span>
+      {% endif %}
+    </div>
+    {% if session.role == 'admin' and s['u_name'] is defined %}
+      <small style="color:var(--text2)"><i class="bi bi-person me-1"></i>{{ s.u_name }} · {{ s.u_email }}</small>
+    {% endif %}
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <form method="post" action="/searches/{{ s.id }}/report">
+      {{ filter_inputs() }}
+      <button class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-envelope me-1"></i>Enviar reporte{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/searches/{{ s.id }}/report_telegram">
+      {{ filter_inputs() }}
+      <button class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-telegram me-1" style="color:#2aabee"></i>Reporte Telegram{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/export">
+      <input type="hidden" name="search_ids" value="{{ s.id }}">
+      {{ filter_inputs() }}
+      <button class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+      </button>
+    </form>
+    <a href="/searches/{{ s.id }}/edit" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-pencil me-1"></i>Editar
+    </a>
+    <form method="post" action="/searches/{{ s.id }}/toggle">
+      <button class="btn btn-sm btn-outline-{{ 'warning' if s.status == 'active' else 'success' }}">
+        <i class="bi bi-{{ 'pause-fill' if s.status == 'active' else 'play-fill' }} me-1"></i>
+        {{ 'Pausar' if s.status == 'active' else 'Reanudar' }}
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Banner de inicialización -->
+{% if not s.initialized %}
+<div id="init-banner" class="card mb-4" style="border:1px solid var(--accent)44;background:var(--card)">
+  <div class="card-body px-4 py-3">
+    <div class="d-flex align-items-center gap-3 mb-2">
+      <div class="spinner-border spinner-border-sm text-primary" role="status" style="flex-shrink:0"></div>
+      <div>
+        <span class="fw-semibold" style="color:var(--accent)">Procesando histórico…</span>
+        <span id="init-detail" style="font-size:.82rem;color:var(--text2);margin-left:.5rem"></span>
+      </div>
+      <span id="init-pct" class="ms-auto fw-bold" style="color:var(--accent);font-size:1.1rem">0 %</span>
+    </div>
+    <div style="background:var(--card2);border-radius:4px;height:6px;overflow:hidden">
+      <div id="init-bar" style="background:var(--accent);height:100%;width:0%;transition:width .4s ease"></div>
+    </div>
+    <div id="init-sub" style="font-size:.75rem;color:var(--muted);margin-top:.4rem">
+      Buscando coincidencias en las transcripciones del período seleccionado…
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  const sid     = {{ s.id }};
+  const banner  = document.getElementById('init-banner');
+  const bar     = document.getElementById('init-bar');
+  const pctEl   = document.getElementById('init-pct');
+  const detail  = document.getElementById('init-detail');
+  const sub     = document.getElementById('init-sub');
+
+  function fmt(n){ return n.toLocaleString('es-MX'); }
+
+  function poll(){
+    fetch('/api/searches/' + sid + '/progress')
+      .then(r => r.json())
+      .then(d => {
+        if(d.initialized){
+          bar.style.width = '100%';
+          pctEl.textContent = '100 %';
+          detail.textContent = d.total ? '— ' + fmt(d.total) + ' registros revisados' : '';
+          sub.textContent = 'Listo. Recargando…';
+          setTimeout(() => location.reload(), 800);
+          return;
+        }
+        const pct = d.pct || 0;
+        bar.style.width = pct + '%';
+        pctEl.textContent = pct + ' %';
+        if(d.total > 0){
+          detail.textContent = '— ' + fmt(d.done) + ' / ' + fmt(d.total) + ' registros';
+          const remaining = d.total - d.done;
+          // Rough ETA: watcher processes ~2000 rows/tick (5 s)
+          if(remaining > 0 && d.done > 0){
+            const etaSec = Math.round(remaining / 2000 * 5);
+            const etaTxt = etaSec < 60
+              ? etaSec + ' s restantes'
+              : Math.ceil(etaSec / 60) + ' min restantes';
+            sub.textContent = etaTxt;
+          }
+        }
+        setTimeout(poll, 2000);
+      })
+      .catch(() => setTimeout(poll, 3000));
+  }
+
+  poll();
+})();
+</script>
+{% endif %}
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="stat">
+      <div class="stat-val" style="color:var(--orange)" id="total-count">{{ total_all }}</div>
+      {% set any_filter = kfs or cfs or pfs or date_from or date_to %}
+      {% if any_filter %}
+      <div class="stat-lbl">
+        Total · <span style="color:var(--accent);font-weight:700">{{ total }} filtrado{{ 's' if total != 1 }}</span>
+      </div>
+      {% else %}
+      <div class="stat-lbl">Coincidencias totales</div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat">
+      <div class="stat-val" style="font-size:1.3rem;padding-top:.2rem">{{ s.date_start }}</div>
+      <div class="stat-lbl"><i class="bi bi-calendar me-1"></i>Inicio</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat">
+      <div class="stat-val" style="font-size:1.3rem;padding-top:.2rem">{{ s.date_end }}</div>
+      <div class="stat-lbl"><i class="bi bi-calendar-check me-1"></i>Fin</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="stat">
+      <div class="stat-val" style="font-size:1.1rem;padding-top:.3rem">
+        {% if s.delivery_mode == 'immediate' %}
+          <span style="color:var(--red)"><i class="bi bi-bell-fill"></i> Inmediata</span>
+        {% elif s.delivery_mode == 'daily' %}
+          <span style="color:var(--amber)"><i class="bi bi-calendar-day"></i> Diaria</span>
+        {% else %}
+          <span style="color:var(--green)"><i class="bi bi-flag-fill"></i> Final</span>
+        {% endif %}
+      </div>
+      <div class="stat-lbl">{{ s.report_email or 'Sin correo configurado' }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <!-- Palabras + conteos -->
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-header py-3 px-4">
+        <span class="fw-semibold" style="font-size:.9rem">
+          <i class="bi bi-tag me-2" style="color:var(--accent)"></i>Palabras monitoreadas
+        </span>
+      </div>
+      <div class="card-body px-4">
+        {% for stat in kw_stats %}
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="kw">{{ stat.keyword }}</span>
+          <div class="d-flex align-items-center gap-2">
+            <div style="background:var(--card2);border-radius:4px;height:6px;width:80px;overflow:hidden">
+              {% set pct = (stat.cnt / total * 100) | int if total > 0 else 0 %}
+              <div style="background:var(--orange);height:100%;width:{{ pct }}%"></div>
+            </div>
+            <span class="fw-bold" style="color:var(--orange);font-size:.85rem;min-width:28px;text-align:right">
+              {{ stat.cnt }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not kw_stats %}
+          <p style="color:var(--muted);font-size:.85rem">Sin coincidencias aún</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Top canales -->
+  <div class="col-md-8">
+    <div class="card h-100">
+      <div class="card-header py-3 px-4">
+        <span class="fw-semibold" style="font-size:.9rem">
+          <i class="bi bi-tv me-2" style="color:var(--green)"></i>Top canales
+        </span>
+      </div>
+      <div class="card-body px-4">
+        {% set max_ch = ch_stats[0].cnt if ch_stats else 1 %}
+        {% for ch in ch_stats %}
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <div style="min-width:130px;font-size:.82rem;color:var(--green);font-weight:600">
+            {{ ch.channel_name[:20] }}
+          </div>
+          <div style="flex:1;background:var(--card2);border-radius:4px;height:8px;overflow:hidden">
+            {% set pct = (ch.cnt / max_ch * 100) | int %}
+            <div style="background:#10b98155;height:100%;width:{{ pct }}%"></div>
+          </div>
+          <span style="font-size:.82rem;color:var(--text2);min-width:28px;text-align:right">{{ ch.cnt }}</span>
+        </div>
+        {% endfor %}
+        {% if not ch_stats %}
+          <p style="color:var(--muted);font-size:.85rem">Sin datos de canales</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Mapa de calor -->
+{% if hm_max > 0 %}
+<div class="card mb-4">
+  <div class="card-header py-3 px-4">
+    <span class="fw-semibold" style="font-size:.9rem">
+      <i class="bi bi-grid-3x3 me-2" style="color:var(--orange)"></i>Mapa de calor — hora × día
+    </span>
+  </div>
+  <div class="card-body p-0">
+    <div id="heatmap-wrap" style="overflow-x:auto;padding:1rem 0 1rem 0"></div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Coincidencias -->
+<div class="card">
+  <div class="card-header py-3 px-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+      <span class="fw-semibold">
+        <i class="bi bi-lightning me-2" style="color:var(--orange)"></i>
+        Coincidencias
+        <span class="ms-1 px-2 py-0 rounded" style="background:var(--card2);font-size:.8rem" id="total-badge">{{ total }}</span>
+      </span>
+      {% set any_filter = kfs or cfs or pfs or date_from or date_to %}
+      {% if any_filter %}
+        <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-x-circle me-1"></i>Limpiar filtros
+        </a>
+      {% endif %}
+    </div>
+
+    <form id="filter-form" method="get" class="d-flex flex-wrap gap-2 align-items-end">
+
+      <!-- Fechas -->
+      <div class="d-flex gap-1 align-items-center">
+        <label style="font-size:.75rem;color:var(--muted);white-space:nowrap">Desde</label>
+        <input type="date" name="date_from" class="form-control form-control-sm" style="width:135px"
+               value="{{ date_from }}" min="{{ s.date_start }}" max="{{ s.date_end }}">
+        <label style="font-size:.75rem;color:var(--muted);white-space:nowrap">Hasta</label>
+        <input type="date" name="date_to" class="form-control form-control-sm" style="width:135px"
+               value="{{ date_to }}" min="{{ s.date_start }}" max="{{ s.date_end }}">
+      </div>
+
+      <!-- Palabras clave (multi) -->
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" id="btn-kw">
+          {% if kfs %}Palabras ({{ kfs|length }}){% else %}Palabras{% endif %}
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:180px;max-height:240px;overflow-y:auto">
+          {% for k in kw_all %}
+          <div class="form-check">
+            <input class="form-check-input fcheck" type="checkbox" name="kw"
+                   value="{{ k.keyword }}" id="kw{{ loop.index }}"
+                   data-btn="btn-kw" data-label="Palabras"
+                   {{ 'checked' if k.keyword in kfs }}>
+            <label class="form-check-label" for="kw{{ loop.index }}" style="font-size:.82rem">
+              {{ k.keyword }}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- Canales (multi) -->
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" id="btn-ch">
+          {% if cfs %}Canales ({{ cfs|length }}){% else %}Canales{% endif %}
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:180px;max-height:240px;overflow-y:auto">
+          {% for c in ch_all %}
+          <div class="form-check">
+            <input class="form-check-input fcheck" type="checkbox" name="ch"
+                   value="{{ c.channel_name }}" id="ch{{ loop.index }}"
+                   data-btn="btn-ch" data-label="Canales"
+                   {{ 'checked' if c.channel_name in cfs }}>
+            <label class="form-check-label" for="ch{{ loop.index }}" style="font-size:.82rem">
+              {{ c.channel_name }}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- Programas EPG (multi) -->
+      {% if prog_all %}
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" id="btn-prog">
+          {% if pfs %}Programas ({{ pfs|length }}){% else %}Programa EPG{% endif %}
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:220px;max-height:260px;overflow-y:auto">
+          {% for p in prog_all %}
+          <div class="form-check">
+            <input class="form-check-input fcheck" type="checkbox" name="prog"
+                   value="{{ p.title }}" id="prog{{ loop.index }}"
+                   data-btn="btn-prog" data-label="Programas"
+                   {{ 'checked' if p.title in pfs }}>
+            <label class="form-check-label" for="prog{{ loop.index }}" style="font-size:.82rem">
+              {{ p.title }}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-funnel-fill me-1"></i>Filtrar
+      </button>
+
+    </form>
+  </div>
+
+  <div style="overflow-x:auto;width:100%">
+    <table class="table mb-0 matches-table" style="width:100%;min-width:960px;table-layout:fixed">
+      <colgroup>
+        <col style="width:140px">  <!-- Fecha/Hora señal -->
+        <col style="width:100px">  <!-- Canal -->
+        <col style="width:155px">  <!-- Programa (EPG) -->
+        <col style="width:105px">  <!-- Palabra -->
+        <col>                      <!-- Texto transcrito (flexible) -->
+        <col style="width:140px">  <!-- Detectado -->
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Fecha/Hora señal</th>
+          <th>Canal</th>
+          <th>Programa (EPG)</th>
+          <th>Palabra</th>
+          <th>Texto transcrito</th>
+          <th>Detectado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in matches %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle">
+            {{ m.timestamp[:19] if m.timestamp else '—' }}
+          </td>
+          <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle"
+              title="{{ m.channel_name }}">
+            {{ m.channel_name }}
+          </td>
+          <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle"
+              title="{{ prog_map.get(m.id, '') or '' }}">
+            {{ prog_map.get(m.id, '') or '—' }}
+          </td>
+          <td style="vertical-align:middle;overflow:hidden">
+            <span class="kw" style="white-space:nowrap">{{ m.keyword }}</span>
+          </td>
+          <td style="vertical-align:middle">
+            <div class="mtext" title="{{ m.matched_text }}">
+              {{ m.matched_text | highlight(m.keyword, s.phonetic) }}
+            </div>
+          </td>
+          <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
+            {{ m.found_at[:19] }}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center py-5" style="color:var(--muted)">
+            <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
+            Sin coincidencias{% if kfs or cfs or pfs or date_from or date_to %} con estos filtros{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div><!-- /overflow-x:auto -->
+
+  {% if pages > 1 %}
+  {% set fp %}{% for k in kfs %}&kw={{ k | urlencode }}{% endfor %}{% for c in cfs %}&ch={{ c | urlencode }}{% endfor %}{% for p in pfs %}&prog={{ p | urlencode }}{% endfor %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}{% endset %}
+  <div class="card-footer d-flex justify-content-between align-items-center py-2 px-4">
+    <small style="color:var(--text2)">Página {{ page }} de {{ pages }} · {{ total }} registros</small>
+    <div class="d-flex gap-1">
+      {% if page > 1 %}
+        <a href="?page={{ page-1 }}{{ fp }}" class="btn btn-sm btn-outline-secondary">‹ Anterior</a>
+      {% endif %}
+      {% if page < pages %}
+        <a href="?page={{ page+1 }}{{ fp }}" class="btn btn-sm btn-outline-secondary">Siguiente ›</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% block scripts %}
+{% if hm_max > 0 %}
+<script>
+(function() {
+  const heatmap  = {{ heatmap | tojson }};
+  const hmMax    = {{ hm_max }};
+  const hmDates  = {{ hm_dates | tojson }};   // ['2026-04-01', '2026-04-02', ...]
+  const HOURS    = Array.from({length:24}, (_,i) => String(i).padStart(2,'0')+'h');
+  const DAY_NAMES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+
+  // Convierte ISO date → "Lun 21/04"
+  function dayLabel(iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    const dt   = new Date(y, m - 1, d);
+    const name = DAY_NAMES[dt.getDay()];
+    return `${name} ${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}`;
+  }
+
+  // Escala de temperatura: frío (azul) → tibio (verde) → caliente (rojo)
+  const TEMP_STOPS = [
+    [0.00, [29,  78, 216]],
+    [0.25, [ 6, 182, 212]],
+    [0.50, [16, 185, 129]],
+    [0.70, [234,179,  8]],
+    [0.85, [249,115, 22]],
+    [1.00, [239, 68, 68]],
+  ];
+
+  function tempColor(t) {
+    if (t <= 0) return 'rgba(255,255,255,0.04)';
+    t = Math.max(0, Math.min(1, t));
+    let i = 0;
+    while (i < TEMP_STOPS.length - 2 && t > TEMP_STOPS[i+1][0]) i++;
+    const [t0, c0] = TEMP_STOPS[i];
+    const [t1, c1] = TEMP_STOPS[i+1];
+    const f = (t - t0) / (t1 - t0);
+    const r = Math.round(c0[0] + f*(c1[0]-c0[0]));
+    const g = Math.round(c0[1] + f*(c1[1]-c0[1]));
+    const b = Math.round(c0[2] + f*(c1[2]-c0[2]));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  const wrap = document.getElementById('heatmap-wrap');
+
+  // El padding lateral lo aplica el wrapper, NO las celdas individuales
+  // → las 24 columnas de horas se distribuyen exactamente igual
+  const PAD = '1.5rem';
+
+  let table = '<table style="border-collapse:collapse;width:100%;table-layout:fixed">';
+  table += '<colgroup><col style="width:72px">' + '<col>'.repeat(24) + '</colgroup>';
+
+  // Cabecera de horas
+  table += '<thead><tr><th></th>';
+  for (let h = 0; h < 24; h++) {
+    table += `<th style="text-align:center;font-size:.65rem;color:#64748b;padding:4px 0;font-weight:400">${HOURS[h]}</th>`;
+  }
+  table += '</tr></thead><tbody>';
+
+  for (let di = 0; di < hmDates.length; di++) {
+    const label   = dayLabel(hmDates[di]);
+    const isToday = hmDates[di] === new Date().toISOString().slice(0, 10);
+    const labelStyle = isToday
+      ? 'font-size:.72rem;color:var(--accent);font-weight:700;white-space:nowrap;padding:2px 8px;text-align:right'
+      : 'font-size:.72rem;color:#94a3b8;font-weight:500;white-space:nowrap;padding:2px 8px;text-align:right';
+    table += `<tr><td style="${labelStyle}">${label}</td>`;
+    for (let h = 0; h < 24; h++) {
+      const val   = (heatmap[di] || [])[h] || 0;
+      const t     = val / (hmMax || 1);
+      const bg    = tempColor(t);
+      const title = val > 0 ? `${label} ${HOURS[h]}: ${val} coincidencia${val !== 1 ? 's' : ''}` : '';
+      table += `<td title="${title}" style="padding:2px 1px"><div style="height:22px;background:${bg};border-radius:3px;outline:1px solid rgba(0,0,0,.15)"></div></td>`;
+    }
+    table += '</tr>';
+  }
+  table += '</tbody></table>';
+
+  const legend = `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;justify-content:flex-end">
+    <span style="font-size:.72rem;color:#64748b">Menos</span>
+    <div style="width:140px;height:10px;border-radius:4px;background:linear-gradient(to right,
+      rgb(29,78,216), rgb(6,182,212), rgb(16,185,129), rgb(234,179,8), rgb(249,115,22), rgb(239,68,68))"></div>
+    <span style="font-size:.72rem;color:#64748b">Más</span>
+  </div>`;
+
+  // Wrapper con el mismo padding lateral que el card-header
+  let html = `<div style="padding:0.75rem ${PAD}">${table}${legend}</div>`;
+
+  wrap.innerHTML = html;
+})();
+</script>
+{% endif %}
+<script>
+// Live auto-refresh: poll for new matches every 8 seconds
+(function() {
+  let lastId = {{ matches[0].id if matches else 0 }};
+  const tbody = document.querySelector('.table tbody');
+  const totalCountEls = document.querySelectorAll('#total-count');
+  // Also update the inline total badge in card header
+  const headerBadge = document.querySelector('.card-header .rounded[style*="card2"]');
+  const isAdmin = {{ 'true' if session.role == 'admin' else 'false' }};
+
+  function esc(s) {
+    return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function makeRow(m) {
+    const ts      = m.timestamp ? m.timestamp.slice(0, 19) : '—';
+    const fat     = m.found_at  ? m.found_at.slice(0, 19)  : '';
+    const rawText = esc(m.matched_text || '');
+    const kwEsc   = esc(m.keyword || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const txt     = kwEsc
+      ? rawText.replace(new RegExp(kwEsc, 'gi'), s => '<mark>' + s + '</mark>')
+      : rawText;
+    const tdBase  = 'style="vertical-align:middle"';
+    return `<tr style="animation:fadeIn .4s ease">
+      <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle">${ts}</td>
+      <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle">${esc(m.channel_name)}</td>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
+      <td style="vertical-align:middle;overflow:hidden"><span class="kw" style="white-space:nowrap">${esc(m.keyword)}</span></td>
+      <td style="vertical-align:middle"><div class="mtext" title="${esc(m.matched_text)}">${txt}</div></td>
+      <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
+    </tr>`;
+  }
+
+  function showNewBadge(n) {
+    let badge = document.getElementById('new-matches-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.id = 'new-matches-badge';
+      badge.style.cssText = 'background:var(--green);color:#000;border-radius:5px;padding:2px 10px;font-size:.8rem;font-weight:700;margin-left:8px;transition:opacity .5s';
+      const header = document.querySelector('.card-header .fw-semibold');
+      if (header) header.appendChild(badge);
+    }
+    badge.textContent = '+' + n + ' nueva' + (n === 1 ? '' : 's');
+    badge.style.opacity = '1';
+    clearTimeout(badge._t);
+    badge._t = setTimeout(() => { badge.style.opacity = '0'; }, 3000);
+  }
+
+  function refresh() {
+    {% if not kfs and not cfs and not pfs and not date_from and not date_to and page == 1 %}
+    fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId)
+      .then(r => r.json())
+      .then(data => {
+        const newMatches = data.matches || [];
+        if (newMatches.length > 0) {
+          // Prepend new rows (they come ASC, so reverse for newest-first display)
+          const reversed = newMatches.slice().reverse();
+          reversed.forEach(m => {
+            if (m.id > lastId) lastId = m.id;
+            tbody.insertAdjacentHTML('afterbegin', makeRow(m));
+          });
+          // Update total count displays
+          totalCountEls.forEach(el => { el.textContent = data.total; });
+          if (headerBadge) headerBadge.textContent = data.total;
+          showNewBadge(newMatches.length);
+        }
+      })
+      .catch(() => {});
+    {% else %}
+    // On filtered/paginated views just update the count silently
+    fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId)
+      .then(r => r.json())
+      .then(data => {
+        if ((data.matches || []).length > 0) {
+          data.matches.forEach(m => { if (m.id > lastId) lastId = m.id; });
+          totalCountEls.forEach(el => { el.textContent = data.total; });
+        }
+      })
+      .catch(() => {});
+    {% endif %}
+  }
+
+  setInterval(refresh, 8000);
+})();
+</script>
+<style>
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.matches-table th:last-child,
+.matches-table td:last-child  { padding-right: 1.5rem !important; }
+.matches-table th:first-child,
+.matches-table td:first-child { padding-left:  1.5rem !important; }
+</style>
+<script>
+// Actualiza el label del botón de cada dropdown según los checks activos
+document.querySelectorAll('.fcheck').forEach(function(cb) {
+  cb.addEventListener('change', function() {
+    var btnId = this.dataset.btn;
+    var label = this.dataset.label;
+    var btn   = document.getElementById(btnId);
+    if (!btn) return;
+    var n = document.querySelectorAll(
+      'input.fcheck[data-btn="' + btnId + '"]:checked'
+    ).length;
+    btn.textContent = n > 0 ? label + ' (' + n + ')' : label;
+    // Restaurar el caret de Bootstrap
+    var caret = document.createElement('span');
+    caret.className = 'dropdown-toggle';
+    // Bootstrap añade el caret vía CSS al .dropdown-toggle; el texto ya está actualizado
+  });
+});
+</script>
+{% endblock %}
+{% endblock %}

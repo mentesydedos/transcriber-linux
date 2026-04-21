@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}Mi perfil — Monitoreo ITESO{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7 col-xl-5">
+
+<div class="page-title mb-1">Mi perfil</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">
+  Actualiza tus datos y configura tus notificaciones personales.
+</p>
+
+<form method="post">
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Datos personales</div>
+    <div class="mb-3">
+      <label class="form-label">Nombre completo</label>
+      <input type="text" name="name" class="form-control"
+             value="{{ u.name }}" required>
+    </div>
+    <div>
+      <label class="form-label">Correo electrónico</label>
+      <input type="email" name="email" class="form-control"
+             value="{{ u.email }}" required>
+    </div>
+  </div>
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Cambiar contraseña <span style="color:var(--muted);font-weight:400;text-transform:none">(opcional)</span></div>
+    <div class="mb-3">
+      <label class="form-label">Nueva contraseña</label>
+      <input type="password" name="password" class="form-control"
+             placeholder="Dejar vacío para no cambiar" minlength="6">
+    </div>
+    <div>
+      <label class="form-label">Confirmar contraseña</label>
+      <input type="password" name="confirm" class="form-control">
+    </div>
+  </div>
+
+  <div class="card p-4 mb-4">
+    <div class="section-label mb-1">Telegram — notificaciones personales</div>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">
+      <i class="bi bi-telegram me-1" style="color:#2aabee"></i>
+      Ingresa tu Chat ID para recibir alertas de tus búsquedas directamente en Telegram.
+    </p>
+    <div class="p-3 rounded mb-3" style="background:var(--card2);border:1px solid var(--border)">
+      <div style="font-size:.82rem;font-weight:600;margin-bottom:.4rem">
+        ¿Cómo obtener tu Chat ID? (30 segundos)
+      </div>
+      <ol style="font-size:.8rem;color:var(--text2);margin:0;padding-left:1.2rem">
+        <li>Abre Telegram y busca <strong style="color:var(--text)">@userinfobot</strong></li>
+        <li>Envíale cualquier mensaje o <code>/start</code></li>
+        <li>Te responde al instante con tu <strong style="color:#2aabee">Id:</strong> — ese número es tu Chat ID</li>
+      </ol>
+    </div>
+    {% if not tg_token %}
+    <div class="mb-3 p-2 rounded" style="background:#1a0a0a;border:1px solid #ef444440;font-size:.8rem;color:var(--red)">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      El administrador aún no ha configurado el Bot de Telegram en Ajustes.
+    </div>
+    {% endif %}
+    <div>
+      <label class="form-label">Mi Chat ID de Telegram</label>
+      <input type="text" name="tg_chat_id" class="form-control"
+             value="{{ u.tg_chat_id or '' }}" placeholder="123456789">
+    </div>
+    {% if u.tg_chat_id and tg_token %}
+    <div class="mt-3">
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-test-tg">
+        <i class="bi bi-send me-1" style="color:#2aabee"></i>Probar mi Telegram
+      </button>
+      <span id="tg-test-result" class="ms-2" style="font-size:.82rem"></span>
+    </div>
+    {% endif %}
+  </div>
+
+  <button type="submit" class="btn btn-primary px-4 fw-semibold">
+    <i class="bi bi-save me-1"></i>Guardar cambios
+  </button>
+
+</form>
+</div>
+</div>
+
+{% block scripts %}
+{% if u.tg_chat_id and tg_token %}
+<script>
+document.getElementById('btn-test-tg').addEventListener('click', function() {
+  const btn = this;
+  const res = document.getElementById('tg-test-result');
+  btn.disabled = true;
+  res.textContent = 'Enviando…';
+  fetch('/profile/test_telegram', { method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(d => {
+      res.textContent = d.ok ? '✓ Enviado correctamente' : '✗ ' + d.error;
+      res.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+    })
+    .catch(() => { res.textContent = '✗ Error de red'; res.style.color = 'var(--red)'; })
+    .finally(() => { btn.disabled = false; });
+});
+</script>
+{% endif %}
+{% endblock %}
+{% endblock %}

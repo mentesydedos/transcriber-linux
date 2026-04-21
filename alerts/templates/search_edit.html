@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}Editar — {{ s.name }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-8 col-xl-6">
+
+<div class="d-flex align-items-center gap-2 mb-1">
+  <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary py-0 px-2">
+    <i class="bi bi-chevron-left"></i>
+  </a>
+  <div class="page-title">Editar búsqueda</div>
+</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">{{ s.name }}</p>
+
+<form method="post">
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Identificación</div>
+    <div class="mb-3">
+      <label class="form-label">Nombre</label>
+      <input type="text" name="name" class="form-control" value="{{ s.name }}" required>
+    </div>
+    <div>
+      <label class="form-label">Estado</label>
+      <select name="status" class="form-select">
+        <option value="active"    {{ 'selected' if s.status == 'active'    }}>Activa</option>
+        <option value="paused"    {{ 'selected' if s.status == 'paused'    }}>Pausada</option>
+        <option value="completed" {{ 'selected' if s.status == 'completed' }}>Completada</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Palabras clave</div>
+    <div class="mb-3">
+      <label class="form-label">Palabras (una por línea o separadas por coma)</label>
+      <textarea name="keywords" class="form-control" rows="4"
+                style="font-family:monospace" required>{{ keywords | join('\n') }}</textarea>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" name="phonetic" id="phonetic"
+             style="width:2.5em;height:1.3em" {{ 'checked' if s.phonetic }}>
+      <label class="form-check-label ms-2" for="phonetic">
+        Búsqueda fonética
+        <small style="color:var(--muted)">(b/v, ll/y, c/z/s, sin tildes)</small>
+      </label>
+    </div>
+  </div>
+
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-3">Período</div>
+    <div class="row g-3">
+      <div class="col-6">
+        <label class="form-label">Fecha inicio</label>
+        <input type="date" name="date_start" class="form-control" value="{{ s.date_start }}" required>
+      </div>
+      <div class="col-6">
+        <label class="form-label">Fecha fin</label>
+        <input type="date" name="date_end" class="form-control" value="{{ s.date_end }}" required>
+      </div>
+    </div>
+  </div>
+
+  <div class="card p-4 mb-4">
+    <div class="section-label mb-3">Entrega de reportes</div>
+    <div class="mb-3">
+      <label class="form-label">Correo para reportes</label>
+      <input type="email" name="report_email" class="form-control" value="{{ s.report_email or '' }}">
+    </div>
+    <div>
+      <label class="form-label">Modo de entrega</label>
+      <select name="delivery_mode" class="form-select">
+        <option value="immediate" {{ 'selected' if s.delivery_mode == 'immediate' }}>
+          Inmediata (un correo por cada detección)
+        </option>
+        <option value="daily" {{ 'selected' if s.delivery_mode == 'daily' }}>
+          Diaria (resumen cada mañana)
+        </option>
+        <option value="final" {{ 'selected' if s.delivery_mode == 'final' }}>
+          Final (reporte al terminar el período)
+        </option>
+      </select>
+    </div>
+
+    <div class="mt-3 pt-3" style="border-top:1px solid var(--border)">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="notify_telegram"
+               id="notify_tg" value="1" {{ 'checked' if s.notify_telegram }}>
+        <label class="form-check-label" for="notify_tg">
+          <i class="bi bi-telegram me-1" style="color:#2aabee"></i>
+          Notificaciones por Telegram (requiere Bot configurado en ajustes)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-primary px-4 fw-semibold">
+      <i class="bi bi-check-lg me-1"></i>Guardar cambios
+    </button>
+    <a href="/searches/{{ s.id }}" class="btn btn-outline-secondary">Cancelar</a>
+  </div>
+
+</form>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,36 @@
+# Bases de datos (contienen datos privados)
+*.db
+*.db-shm
+*.db-wal
+
+# Entorno virtual
+venv/
+env/
+.env
+
+# Modelos descargados (pesados)
+models/
+
+# Salida de transcripciones
+output/
+
+# Logs
+logs/
+
+# Caché Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code
+.claude/
+
+# Archivos temporales / basura
+lavas
+files (1).zip
+epg_channels.txt
+playlist2.m3u
+
+# Windows
+Thumbs.db
+Desktop.ini

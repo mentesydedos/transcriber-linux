@@ -1,0 +1,175 @@
+# requirements.txt
+faster-whisper>=1.0.0
+numpy>=1.24.0
+
+# ─────────────────────────────────────────────────────────────────
+# INSTALACIÓN PASO A PASO
+# ─────────────────────────────────────────────────────────────────
+#
+# 1. DEPENDENCIAS DEL SISTEMA (Ubuntu/Debian)
+# ─────────────────────────────────────────────────────────────────
+#
+#   sudo apt update
+#   sudo apt install ffmpeg python3-pip python3-venv -y
+#
+#
+# 2. DRIVERS CUDA (si no los tienes)
+# ─────────────────────────────────────────────────────────────────
+#
+#   # Verifica si ya los tienes:
+#   nvidia-smi
+#
+#   # Si no: instala CUDA Toolkit 12.x desde:
+#   # https://developer.nvidia.com/cuda-downloads
+#
+#
+# 3. ENTORNO VIRTUAL PYTHON
+# ─────────────────────────────────────────────────────────────────
+#
+#   python3 -m venv venv
+#   source venv/bin/activate           # Linux/Mac
+#   # venv\Scripts\activate            # Windows
+#
+#
+# 4. INSTALAR DEPENDENCIAS PYTHON
+# ─────────────────────────────────────────────────────────────────
+#
+#   pip install faster-whisper numpy
+#
+#   # Para GPU NVIDIA también instala:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+#
+# 5. PREPARAR TU PLAYLIST
+# ─────────────────────────────────────────────────────────────────
+#
+#   Crea o copia tu archivo playlist.m3u en la misma carpeta.
+#   Formato esperado:
+#
+#     #EXTM3U
+#     #EXTINF:-1,Canal de las Estrellas
+#     https://ejemplo.com/stream1.m3u8
+#     #EXTINF:-1,Televisa Guadalajara
+#     https://ejemplo.com/stream2.m3u8
+#
+#   También funciona M3U simple (solo URLs, sin #EXTINF).
+#
+#
+# 6. AJUSTAR GPU_CHANNELS en manager.py
+# ─────────────────────────────────────────────────────────────────
+#
+#   Abre manager.py y ajusta la variable GPU_CHANNELS:
+#
+#   Con GPU 8GB VRAM y faster-whisper large-v3:
+#     GPU_CHANNELS = 4    ← empieza aquí (conservador)
+#
+#   Para saber si puedes subir, monitorea VRAM mientras corre:
+#     watch -n 2 nvidia-smi
+#
+#   Si VRAM se mantiene por debajo del 85%, puedes subir a 5 o 6.
+#   Los canales restantes van automáticamente a CPU (i9).
+#
+#
+# 7. EJECUTAR
+# ─────────────────────────────────────────────────────────────────
+#
+#   # Activar entorno virtual si no está activo
+#   source venv/bin/activate
+#
+#   # Iniciar todos los canales
+#   python manager.py
+#
+#   # En otra terminal, buscar en las transcripciones:
+#   python search.py "presidente"
+#   python search.py "economía" --canal "Milenio" --limite 50
+#   python search.py --status
+#
+#
+# 8. EJECUTAR COMO SERVICIO SYSTEMD (24x7)
+# ─────────────────────────────────────────────────────────────────
+#
+#   Crea /etc/systemd/system/transcriber.service:
+#
+#     [Unit]
+#     Description=TV Transcription Service
+#     After=network.target
+#
+#     [Service]
+#     Type=simple
+#     User=tu_usuario
+#     WorkingDirectory=/ruta/a/transcriber
+#     ExecStart=/ruta/a/transcriber/venv/bin/python manager.py
+#     Restart=always
+#     RestartSec=10
+#
+#     [Install]
+#     WantedBy=multi-user.target
+#
+#   Luego:
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable transcriber
+#     sudo systemctl start transcriber
+#     sudo systemctl status transcriber
+#
+#
+# 9. MONITOREO
+# ─────────────────────────────────────────────────────────────────
+#
+#   # Ver logs del manager:
+#   tail -f logs/manager.log
+#
+#   # Ver log de un canal específico:
+#   tail -f logs/canal_01.log
+#
+#   # Ver uso de GPU en tiempo real:
+#   watch -n 2 nvidia-smi
+#
+#   # Ver uso de CPU:
+#   htop
+#
+#   # Ver transcripciones en tiempo real de un canal:
+#   tail -f output/canal_01_*.txt
+#
+#
+# ESTRUCTURA DE ARCHIVOS GENERADOS
+# ─────────────────────────────────────────────────────────────────
+#
+#   transcriber/
+#   ├── manager.py
+#   ├── worker.py
+#   ├── search.py
+#   ├── playlist.m3u          ← TU ARCHIVO
+#   ├── transcriptions.db     ← SQLite con FTS5 (búsqueda)
+#   ├── models/               ← Modelos Whisper descargados automáticamente
+#   ├── output/               ← Archivos .txt por canal
+#   │   ├── canal_01_Canal_Estrellas.txt
+#   │   ├── canal_02_Televisa.txt
+#   │   └── ...
+#   └── logs/                 ← Logs por canal + manager
+#       ├── manager.log
+#       ├── canal_01.log
+#       └── ...
+#
+#
+# CONSUMO ESTIMADO DE RECURSOS (16 canales)
+# ─────────────────────────────────────────────────────────────────
+#
+#   GPU (4 canales, large-v3 float16):  ~5-6 GB VRAM
+#   CPU (12 canales, large-v3 int8):    ~22-26 GB RAM, 24-28 hilos
+#   Disco (transcripciones):            ~50-100 MB/día según habla
+#
+#
+# AJUSTE FINO DE RENDIMIENTO
+# ─────────────────────────────────────────────────────────────────
+#
+#   Si la latencia es >2 seg en CPU:
+#     → Cambiar a modelo "medium" en worker.py (línea: WhisperModel("large-v3"...))
+#     → Reducir beam_size de 3 a 2
+#     → Aumentar CHUNK_SECONDS a 6 (menos llamadas al modelo)
+#
+#   Si hay demasiado ruido/música transcrita:
+#     → Subir vad_parameters: min_silence_duration_ms=500
+#     → Subir no_speech_threshold a 0.7
+#
+#   Si se pierden palabras al inicio de cada chunk:
+#     → Aumentar OVERLAP_SEC de 0.5 a 1.0 en worker.py

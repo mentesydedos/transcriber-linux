@@ -1,0 +1,163 @@
+{% extends 'base.html' %}
+{% block title %}Panel Admin — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="page-title mb-1">Panel de Administración</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">
+  Gestión de usuarios y todas las búsquedas del sistema.
+</p>
+
+<!-- Usuarios -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold">
+      <i class="bi bi-people me-2" style="color:var(--purple)"></i>Usuarios
+    </span>
+    <span class="section-label">{{ users|length }} registrados</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>Nombre</th>
+          <th>Correo</th>
+          <th>Rol</th>
+          <th>Búsquedas</th>
+          <th>Registro</th>
+          <th>Estado</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td class="fw-semibold">{{ u.name }}</td>
+          <td style="color:var(--text2);font-size:.85rem">{{ u.email }}</td>
+          <td>
+            <form method="post" action="/admin/users/{{ u.id }}/role" class="d-inline">
+              <select name="role" class="form-select form-select-sm d-inline-block"
+                      style="width:auto;padding:.2rem .6rem"
+                      onchange="this.form.submit()"
+                      {{ 'disabled' if u.id == session.uid }}>
+                <option value="user"  {{ 'selected' if u.role == 'user'  }}>Usuario</option>
+                <option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option>
+              </select>
+            </form>
+          </td>
+          <td style="color:var(--text2)">{{ u.sc }}</td>
+          <td style="color:var(--muted);font-size:.8rem">{{ u.created_at[:10] }}</td>
+          <td>
+            {% if u.active %}
+              <span style="color:var(--green);font-size:.82rem">
+                <i class="bi bi-check-circle-fill me-1"></i>Activo
+              </span>
+            {% else %}
+              <span style="color:var(--red);font-size:.82rem">
+                <i class="bi bi-x-circle-fill me-1"></i>Desactivado
+              </span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.id != session.uid %}
+            <form method="post" action="/admin/users/{{ u.id }}/toggle">
+              <button class="btn btn-sm py-0 px-2
+                             {{ 'btn-outline-danger' if u.active else 'btn-outline-success' }}">
+                {{ 'Desactivar' if u.active else 'Activar' }}
+              </button>
+            </form>
+            {% else %}
+              <span style="font-size:.75rem;color:var(--muted)">(tú)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Todas las búsquedas -->
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold">
+      <i class="bi bi-search me-2" style="color:var(--accent)"></i>Todas las búsquedas
+    </span>
+    <span class="section-label">{{ searches|length }} total</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Nombre</th>
+          <th>Usuario</th>
+          <th>Palabras</th>
+          <th>Tipo</th>
+          <th>Período</th>
+          <th>Entrega</th>
+          <th class="text-end">Hits</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in searches %}
+        <tr>
+          <td style="width:24px"><span class="dot dot-{{ s.status }}"></span></td>
+          <td>
+            <a href="/searches/{{ s.id }}" class="fw-semibold text-decoration-none"
+               style="color:var(--text)">{{ s.name }}</a>
+          </td>
+          <td style="color:var(--text2);font-size:.82rem">{{ s.u_name }}</td>
+          <td>
+            {% for kw in s.keywords | fromjson %}
+              <span class="kw me-1">{{ kw }}</span>
+            {% endfor %}
+          </td>
+          <td>
+            {% if s.phonetic %}
+              <span class="type-phonetic"><i class="bi bi-soundwave"></i></span>
+            {% else %}
+              <span class="type-exact"><i class="bi bi-cursor-text"></i></span>
+            {% endif %}
+          </td>
+          <td style="font-size:.8rem;color:var(--text2);white-space:nowrap">
+            {{ s.date_start }} → {{ s.date_end }}
+          </td>
+          <td>
+            {% if s.delivery_mode == 'immediate' %}
+              <span class="dl-immediate">Inmediata</span>
+            {% elif s.delivery_mode == 'daily' %}
+              <span class="dl-daily">Diaria</span>
+            {% else %}
+              <span class="dl-final">Final</span>
+            {% endif %}
+          </td>
+          <td class="text-end fw-bold" style="color:var(--orange)">{{ s.mc }}</td>
+          <td>
+            <div class="d-flex gap-1 justify-content-end">
+              <a href="/searches/{{ s.id }}/edit"
+                 class="btn btn-sm btn-outline-secondary py-0 px-2" title="Editar">
+                <i class="bi bi-pencil"></i>
+              </a>
+              <form method="post" action="/searches/{{ s.id }}/delete"
+                    onsubmit="return confirm('¿Eliminar «{{ s.name }}»?')">
+                <button class="btn btn-sm btn-outline-danger py-0 px-2" title="Eliminar">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="text-center py-4" style="color:var(--muted)">
+            Sin búsquedas en el sistema
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

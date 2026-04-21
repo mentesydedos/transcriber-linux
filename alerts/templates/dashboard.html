@@ -1,0 +1,311 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard — Monitoreo ITESO{% endblock %}
+{% block content %}
+
+<!-- Header -->
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="page-title">Dashboard</div>
+    <div style="font-size:.82rem;color:var(--text2)">Monitoreo en tiempo real de transcripciones TV</div>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary btn-sm px-3" data-bs-toggle="modal" data-bs-target="#exportModal">
+      <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Exportar Excel
+    </button>
+    <a href="/searches/new" class="btn btn-primary btn-sm px-3">
+      <i class="bi bi-plus-lg me-1"></i>Nueva búsqueda
+    </a>
+  </div>
+</div>
+
+<!-- Modal Exportar -->
+<div class="modal fade" id="exportModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="background:var(--card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-file-earmark-excel me-2" style="color:#1d6f42"></i>Exportar a Excel
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form action="/export" method="post">
+        <div class="modal-body">
+          <p style="font-size:.875rem;color:var(--text2);margin-bottom:1rem">
+            Selecciona las búsquedas a incluir en el archivo Excel. Cada búsqueda generará una hoja separada.
+          </p>
+          <!-- Seleccionar todas -->
+          <div class="form-check mb-2 pb-2" style="border-bottom:1px solid var(--border)">
+            <input class="form-check-input" type="checkbox" id="sel_all"
+                   onchange="document.querySelectorAll('.exp-cb').forEach(c=>c.checked=this.checked)">
+            <label class="form-check-label fw-semibold" for="sel_all">Seleccionar todas</label>
+          </div>
+          <!-- Lista de búsquedas -->
+          {% for s in searches %}
+          <div class="form-check mb-2">
+            <input class="form-check-input exp-cb" type="checkbox"
+                   name="search_ids" value="{{ s.id }}" id="exp_{{ s.id }}">
+            <label class="form-check-label d-flex justify-content-between align-items-center w-100 pe-2"
+                   for="exp_{{ s.id }}">
+              <span>
+                <span class="dot dot-{{ s.status }} me-2"></span>
+                {{ s.name }}
+              </span>
+              <span style="font-size:.8rem;color:var(--orange);font-weight:700">
+                {{ s.mc }} hits
+              </span>
+            </label>
+          </div>
+          {% else %}
+          <p style="color:var(--muted);font-size:.875rem">Sin búsquedas disponibles.</p>
+          {% endfor %}
+        </div>
+        <div class="modal-footer" style="border-color:var(--border)">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary fw-semibold">
+            <i class="bi bi-download me-1"></i>Descargar Excel
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-xl-3">
+    <div class="stat d-flex justify-content-between align-items-start">
+      <div>
+        <div class="stat-val" style="color:var(--accent)">{{ total_searches }}</div>
+        <div class="stat-lbl"><i class="bi bi-search me-1"></i>Búsquedas totales</div>
+      </div>
+      <i class="bi bi-search stat-icon"></i>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="stat d-flex justify-content-between align-items-start">
+      <div>
+        <div class="stat-val" style="color:var(--green)" id="stat-active-searches">{{ active_searches }}</div>
+        <div class="stat-lbl"><i class="bi bi-activity me-1"></i>Activas ahora</div>
+      </div>
+      <i class="bi bi-activity stat-icon"></i>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="stat d-flex justify-content-between align-items-start">
+      <div>
+        <div class="stat-val" style="color:var(--orange)" id="stat-total-matches">{{ total_matches }}</div>
+        <div class="stat-lbl"><i class="bi bi-lightning me-1"></i>Coincidencias</div>
+      </div>
+      <i class="bi bi-lightning stat-icon"></i>
+    </div>
+  </div>
+  {% if total_users is not none %}
+  <div class="col-6 col-xl-3">
+    <div class="stat d-flex justify-content-between align-items-start">
+      <div>
+        <div class="stat-val" style="color:var(--purple)">{{ total_users }}</div>
+        <div class="stat-lbl"><i class="bi bi-people me-1"></i>Usuarios</div>
+      </div>
+      <i class="bi bi-people stat-icon"></i>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Searches table -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-list-ul me-2" style="color:var(--accent)"></i>
+      {% if session.role == 'admin' %}Todas las búsquedas{% else %}Mis búsquedas{% endif %}
+    </span>
+    <span class="section-label">{{ searches|length }} total</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Nombre</th>
+          {% if session.role == 'admin' %}<th>Usuario</th>{% endif %}
+          <th>Palabras</th>
+          <th>Tipo</th>
+          <th>Período</th>
+          <th>Entrega</th>
+          <th class="text-end">Hits</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in searches %}
+        <tr style="{{ 'opacity:.55' if s.status == 'completed' }}">
+          <td style="width:24px">
+            <span class="dot dot-{{ s.status }}"></span>
+          </td>
+          <td>
+            <a href="/searches/{{ s.id }}" class="fw-semibold text-decoration-none"
+               style="color:var(--text)">{{ s.name }}</a>
+            <div style="margin-top:4px">
+              {% if s.status == 'completed' %}
+                <span style="display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:600;background:#374151;color:#9ca3af;border-radius:20px;padding:2px 10px">
+                  <i class="bi bi-flag-fill" style="font-size:.65rem"></i> Finalizada
+                </span>
+              {% elif s.status == 'paused' %}
+                <span style="display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:600;background:#f59e0b22;color:#f59e0b;border-radius:20px;padding:2px 10px;border:1px solid #f59e0b44">
+                  <i class="bi bi-pause-fill" style="font-size:.65rem"></i> Pausada
+                </span>
+              {% else %}
+                <span style="display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:600;background:#10b98122;color:#10b981;border-radius:20px;padding:2px 10px;border:1px solid #10b98144">
+                  <i class="bi bi-broadcast" style="font-size:.65rem"></i> Activa
+                </span>
+              {% endif %}
+            </div>
+          </td>
+          {% if session.role == 'admin' %}
+          <td style="color:var(--text2);font-size:.82rem">{{ s.u_name }}</td>
+          {% endif %}
+          <td>
+            {% for kw in s.keywords | fromjson %}
+              <span class="kw me-1 mb-1 d-inline-block">{{ kw }}</span>
+            {% endfor %}
+          </td>
+          <td>
+            {% if s.phonetic %}
+              <span class="type-phonetic"><i class="bi bi-soundwave me-1"></i>Fonética</span>
+            {% else %}
+              <span class="type-exact"><i class="bi bi-cursor-text me-1"></i>Precisa</span>
+            {% endif %}
+          </td>
+          <td style="font-size:.8rem;color:var(--text2);white-space:nowrap">
+            {{ s.date_start }}<br><span style="color:var(--muted)">→ {{ s.date_end }}</span>
+          </td>
+          <td>
+            {% if s.delivery_mode == 'immediate' %}
+              <span class="dl-immediate"><i class="bi bi-bell me-1"></i>Inmediata</span>
+            {% elif s.delivery_mode == 'daily' %}
+              <span class="dl-daily"><i class="bi bi-calendar-day me-1"></i>Diaria</span>
+            {% else %}
+              <span class="dl-final"><i class="bi bi-flag me-1"></i>Final</span>
+            {% endif %}
+          </td>
+          <td class="text-end">
+            <span class="fw-bold" style="color:var(--orange);font-size:1rem" id="mc-{{ s.id }}">{{ s.mc }}</span>
+          </td>
+          <td>
+            <div class="d-flex gap-1 justify-content-end">
+              <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Ver">
+                <i class="bi bi-eye"></i>
+              </a>
+              <form method="post" action="/searches/{{ s.id }}/toggle">
+                <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                        title="{{ 'Pausar' if s.status == 'active' else 'Reanudar' }}">
+                  <i class="bi bi-{{ 'pause-fill' if s.status == 'active' else 'play-fill' }}"></i>
+                </button>
+              </form>
+              <a href="/searches/{{ s.id }}/edit" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Editar">
+                <i class="bi bi-pencil"></i>
+              </a>
+              <form method="post" action="/searches/{{ s.id }}/delete"
+                    onsubmit="return confirm('¿Eliminar «{{ s.name }}» y todas sus coincidencias?')">
+                <button class="btn btn-sm btn-outline-danger py-0 px-2" title="Eliminar">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="text-center py-5" style="color:var(--muted)">
+            <i class="bi bi-search d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
+            Sin búsquedas. <a href="/searches/new">Crea una ahora</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Recent matches -->
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-lightning me-2" style="color:var(--orange)"></i>Coincidencias recientes</span>
+    <span class="section-label" id="live-badge">
+      <span class="dot dot-active me-1"></span>en vivo
+    </span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0" id="recent-table">
+      <thead>
+        <tr>
+          <th>Fecha / Hora</th>
+          <th>Búsqueda</th>
+          {% if session.role == 'admin' %}<th>Usuario</th>{% endif %}
+          <th>Palabra</th>
+          <th>Canal</th>
+          <th>Texto detectado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in recent %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--text2);font-size:.8rem">
+            {{ m.timestamp[:19] if m.timestamp else '—' }}
+          </td>
+          <td>
+            <a href="/searches/{{ m.s_id }}" class="text-decoration-none fw-semibold"
+               style="color:var(--text)">{{ m.s_name }}</a>
+          </td>
+          {% if session.role == 'admin' %}<td style="color:var(--text2);font-size:.82rem">{{ m.u_name }}</td>{% endif %}
+          <td><span class="kw">{{ m.keyword }}</span></td>
+          <td style="color:var(--green);font-weight:600;font-size:.85rem">{{ m.channel_name }}</td>
+          <td><div class="mtext" title="{{ m.matched_text }}">{{ m.matched_text }}</div></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center py-4" style="color:var(--muted)">
+            Sin coincidencias registradas todavía
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+// Live auto-refresh: poll /api/stats every 10 seconds
+(function() {
+  const liveBadge = document.getElementById('live-badge');
+
+  function pulse() {
+    if (!liveBadge) return;
+    liveBadge.style.opacity = '0.4';
+    setTimeout(() => { liveBadge.style.opacity = '1'; }, 400);
+  }
+
+  function refresh() {
+    fetch('/api/stats')
+      .then(r => r.json())
+      .then(data => {
+        // Update per-search match counts
+        (data.searches || []).forEach(s => {
+          const el = document.getElementById('mc-' + s.id);
+          if (el) el.textContent = s.mc;
+        });
+        // Update stat cards
+        const tmEl = document.getElementById('stat-total-matches');
+        if (tmEl) tmEl.textContent = data.total_matches;
+        const asEl = document.getElementById('stat-active-searches');
+        if (asEl) asEl.textContent = data.active_searches;
+        pulse();
+      })
+      .catch(() => {});
+  }
+
+  setInterval(refresh, 10000);
+})();
+</script>
+{% endblock %}
+{% endblock %}

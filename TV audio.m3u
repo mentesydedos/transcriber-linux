@@ -1,0 +1,17 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="000533bd87238bce76e6989466084c2d" tvg-chno="1.1",Azteca Uno
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1026753792?profile=audio-aac
+#EXTINF:-1 tvg-id="b692ea424d97438c66a04ff808d8616c" tvg-chno="1.2",ADN 40
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1122669238?profile=audio-aac
+#EXTINF:-1 tvg-id="b46c1f2710628ac505fc720119cb03d0" tvg-chno="2.1",Las Estrellas
+http://poncho:1234@148.201.38.136:9981/stream/channelid/656370868?profile=audio-aac
+#EXTINF:-1 tvg-id="779c5d4194d7418e34762a4b78ab406e" tvg-chno="2.2",N+
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1096653943?profile=audio-aac
+#EXTINF:-1 tvg-id="af2ef49e381411876093b867ef669e1d" tvg-chno="3.1",Imagen
+http://poncho:1234@148.201.38.136:9981/stream/channelid/519319215?profile=audio-aac
+#EXTINF:-1 tvg-id="8568a149eb4a3ae9b0166cb602d7b3bc" tvg-chno="4.1",Canal 4
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1235314821?profile=audio-aac
+#EXTINF:-1 tvg-id="d564b5df77cb5b3e6a90e1421b06aa36" tvg-chno="5.1",Canal 5
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1605723349?profile=audio-aac
+#EXTINF:-1 tvg-id="5b255f8db4be9fec44784022cbafb59f" tvg-chno="7.1",Azteca 7
+http://poncho:1234@148.201.38.136:9981/stream/channelid/224339291?profile=audio-aac
