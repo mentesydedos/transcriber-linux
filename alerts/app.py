@@ -39,6 +39,78 @@ def _phonetic(s: str) -> str:
     t = re.sub(r'x', 'ks', t)
     return t
 
+CHUNK_SECONDS = 30   # debe coincidir con worker.py / transcriber.py
+
+def _locate_keyword(text, keyword, phonetic=False):
+    """Encuentra el índice (basado en palabras) de la primera ocurrencia
+    de la keyword. Devuelve (idx_word, total_words) o (None, total_words).
+    Usa la misma lógica de match que _highlight (acento-insensitive y
+    opcionalmente fonético)."""
+    if not text or not keyword:
+        return None, 0
+    words = text.split()
+    n = len(words)
+    if n == 0:
+        return None, 0
+    if phonetic:
+        ph_kw = _phonetic(keyword)
+        for i, w in enumerate(words):
+            if ph_kw in _phonetic(w):
+                return i, n
+    else:
+        kw_n = _strip_acc(keyword)
+        for i, w in enumerate(words):
+            if kw_n in _strip_acc(w):
+                return i, n
+    return None, n
+
+def _center_text(text, idx_word, words_each_side=30):
+    """Recorta el texto centrado en la palabra match: N palabras antes y N después.
+    Si no hay match, devuelve las primeras 2N+1 palabras."""
+    if not text:
+        return ''
+    words = text.split()
+    n = len(words)
+    if n == 0:
+        return ''
+    if idx_word is None:
+        idx_word = 0
+    start = max(0, idx_word - words_each_side)
+    end   = min(n, idx_word + words_each_side + 1)
+    snippet = ' '.join(words[start:end])
+    if start > 0:
+        snippet = '… ' + snippet
+    if end < n:
+        snippet = snippet + ' …'
+    return snippet
+
+def _precise_timestamp(start_ts, idx_word, total_words, chunk_sec=CHUNK_SECONDS):
+    """Estima el timestamp absoluto del momento exacto en que se mencionó la
+    palabra dentro del chunk. start_ts es el inicio del audio (ya garantizado
+    en worker.py al momento de captura, no de inferencia). Si la palabra está
+    en la posición k de N, asumimos que se mencionó en (k+0.5)/N del chunk.
+    Precisión típica ±2-3s para chunks de 30s."""
+    if not start_ts or idx_word is None or not total_words:
+        return start_ts
+    try:
+        # Soporta ISO con o sin milisegundos
+        dt = datetime.fromisoformat(start_ts)
+        offset = ((idx_word + 0.5) / total_words) * chunk_sec
+        return (dt + timedelta(seconds=offset)).isoformat(sep=' ', timespec='seconds')
+    except Exception:
+        return start_ts
+
+def _enrich_match(m, phonetic=False):
+    """Convierte una Row a dict y agrega: precise_timestamp y centered_text.
+    `m` puede ser sqlite3.Row o dict."""
+    md = dict(m)
+    text = md.get('matched_text') or ''
+    kw   = md.get('keyword') or ''
+    idx, total = _locate_keyword(text, kw, phonetic=phonetic)
+    md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx, total)
+    md['centered_text']     = _center_text(text, idx, words_each_side=30)
+    return md
+
 def _highlight(text, keyword, phonetic=False):
     """Resalta todas las ocurrencias de keyword en text con <mark>.
     Usa comparación sin acentos/mayúsculas; en modo fonético detecta
@@ -189,6 +261,17 @@ def create_app() -> Flask:
         c = g.pop('db', None)
         if c:
             c.close()
+
+    @app.after_request
+    def _no_cache_html(resp):
+        """Evita caché agresivo en páginas HTML dinámicas. Los assets estáticos
+        siguen cacheándose normalmente."""
+        ct = resp.headers.get('Content-Type', '')
+        if 'text/html' in ct:
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            resp.headers['Pragma']        = 'no-cache'
+            resp.headers['Expires']       = '0'
+        return resp
 
     # ── Auth decorators ────────────────────────────────────────────
     def login_required(f):
@@ -394,6 +477,54 @@ def create_app() -> Flask:
         )
 
     # ══════════════════════════════════════════════════════════════
+    # CONSULTAS IA (RAG)
+    # ══════════════════════════════════════════════════════════════
+    @app.route('/ask')
+    @login_required
+    def ask_page():
+        from rag import RANGOS
+        # Canales distintos visibles para el selector
+        canales = []
+        try:
+            conn = sqlite3.connect(str(TRANS_DB), timeout=2)
+            canales = [r[0] for r in conn.execute(
+                "SELECT DISTINCT channel_name FROM transcriptions "
+                "WHERE channel_name IS NOT NULL ORDER BY channel_name").fetchall()]
+            conn.close()
+        except Exception:
+            pass
+        return render_template('ask.html', rangos=RANGOS, canales=canales)
+
+    @app.route('/api/ask', methods=['POST'])
+    @login_required
+    def api_ask():
+        import json as _json
+        from flask import Response, stream_with_context
+        from rag   import ask_stream
+
+        try:
+            data = request.get_json(force=True) or {}
+        except Exception:
+            data = {}
+        question = (data.get('q') or '').strip()
+        rango    = data.get('rango', '24h')
+        canal    = (data.get('canal') or '').strip() or None
+        try:
+            top_n = int(data.get('top_n') or 15)
+        except Exception:
+            top_n = 15
+
+        if not question:
+            return jsonify({'error': 'pregunta vacía'}), 400
+
+        @stream_with_context
+        def gen():
+            for evt in ask_stream(question, rango=rango, canal=canal, top_n=top_n):
+                yield _json.dumps(evt) + "\n"
+
+        return Response(gen(), mimetype='application/x-ndjson')
+
+    # ══════════════════════════════════════════════════════════════
     # BÚSQUEDAS — CRUD
     # ══════════════════════════════════════════════════════════════
     @app.route('/searches/new', methods=['GET', 'POST'])
@@ -470,10 +601,12 @@ def create_app() -> Flask:
         d         = db()
         total     = d.execute(f"SELECT COUNT(*) FROM matches WHERE {where}", params).fetchone()[0]
         total_all = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
-        matches= d.execute(
+        matches_raw = d.execute(
             f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC LIMIT ? OFFSET ?",
             params + [pp, (page-1)*pp]
         ).fetchall()
+        # Enriquece cada match con precise_timestamp y centered_text
+        matches = [_enrich_match(m, phonetic=bool(s['phonetic'])) for m in matches_raw]
         kw_all = d.execute("SELECT DISTINCT keyword FROM matches WHERE search_id=? ORDER BY keyword", (sid,)).fetchall()
         ch_all = d.execute("SELECT DISTINCT channel_name FROM matches WHERE search_id=? ORDER BY channel_name", (sid,)).fetchall()
         prog_all = d.execute("""
@@ -780,7 +913,9 @@ def create_app() -> Flask:
                 "SELECT * FROM matches WHERE search_id=? ORDER BY found_at DESC LIMIT 50", (sid,)
             ).fetchall()
         total = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
-        return jsonify(matches=[dict(r) for r in rows], total=total)
+        phonetic = bool(s['phonetic'])
+        return jsonify(matches=[_enrich_match(r, phonetic=phonetic) for r in rows],
+                       total=total)
 
     @app.route('/api/stats')
     @login_required

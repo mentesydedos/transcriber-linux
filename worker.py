@@ -1,7 +1,9 @@
 """
-worker.py — Captura de audio de un canal M3U
-Solo captura audio con FFmpeg y lo envía a la cola compartida del transcriber.
-No carga modelos ni hace inferencia — eso lo hace transcriber.py centralizado.
+worker.py — Captura de audio de un canal M3U.
+
+Cada worker tiene su PROPIA cola de salida (maxsize=3) con drop-oldest:
+si los inference workers no dan abasto, el chunk más viejo se descarta en
+vez de bloquear. Esto impide que un canal atrasado congele al sistema.
 """
 
 import subprocess
@@ -12,7 +14,7 @@ import sys
 import logging
 import threading
 import queue
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -127,6 +129,10 @@ def start_ffmpeg(url: str, logger: logging.Logger, channels: int = 2) -> subproc
 
 def ffmpeg_reader(proc: subprocess.Popen, audio_q: queue.Queue,
                   stop_event: threading.Event, logger: logging.Logger):
+    """Lee audio de FFmpeg y empuja tuplas (audio, end_ts) a la cola.
+    end_ts es el reloj de pared al momento en que el chunk está completo — usado
+    más adelante para calcular start_ts = end_ts - CHUNK_SECONDS y anclar la
+    transcripción al tiempo real del stream (no al momento de inferencia)."""
     bytes_per_chunk = CHUNK_SAMPLES * 2
     remainder = b""
     while not stop_event.is_set():
@@ -140,7 +146,7 @@ def ffmpeg_reader(proc: subprocess.Popen, audio_q: queue.Queue,
             for i in range(n):
                 chunk_bytes = raw[i * CHUNK_SAMPLES * 2:(i+1) * CHUNK_SAMPLES * 2]
                 audio = np.frombuffer(chunk_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                audio_q.put(audio)
+                audio_q.put((audio, datetime.now()))
             remainder = raw[n * CHUNK_SAMPLES * 2:]
         except Exception as e:
             logger.error(f"Error leyendo FFmpeg: {e}")
@@ -188,7 +194,7 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
         try:
             while True:
                 try:
-                    chunk = local_q.get(timeout=60)
+                    chunk, end_ts = local_q.get(timeout=60)
                 except queue.Empty:
                     logger.warning("Timeout esperando audio — stream posiblemente caído")
                     break
@@ -196,13 +202,33 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
                 audio_with_overlap = np.concatenate([previous_audio, chunk]) if OVERLAP_SAMPLES > 0 else chunk
                 previous_audio     = chunk[-OVERLAP_SAMPLES:] if OVERLAP_SAMPLES > 0 else np.zeros(0, dtype=np.float32)
 
-                # Enviar al transcriber centralizado (bloqueante — sin pérdida de datos)
-                shared_queue.put({
+                # Timestamps absolutos del audio (anclados al reloj de pared en captura,
+                # NO al momento de inferencia). Formato ISO con milisegundos.
+                start_ts = (end_ts - timedelta(seconds=CHUNK_SECONDS)).isoformat(
+                    sep=" ", timespec="milliseconds")
+                end_ts_s = end_ts.isoformat(sep=" ", timespec="milliseconds")
+
+                item = {
                     "channel_id":   channel_id,
                     "channel_name": channel_name,
                     "audio":        audio_with_overlap,
                     "chunk_sec":    CHUNK_SECONDS,
-                })
+                    "start_ts":     start_ts,
+                    "end_ts":       end_ts_s,
+                }
+
+                # Drop-oldest: si la cola está llena, descartar el chunk más viejo
+                # antes de meter el nuevo. Evita que un canal atrasado bloquee.
+                while True:
+                    try:
+                        shared_queue.put_nowait(item)
+                        break
+                    except queue.Full:
+                        try:
+                            shared_queue.get_nowait()
+                            logger.warning("Cola llena — chunk viejo descartado")
+                        except queue.Empty:
+                            pass
 
         except KeyboardInterrupt:
             break

@@ -80,10 +80,16 @@ def get_latest_v2(conn: sqlite3.Connection, n_canales: int = 20,
     """
     Por cada canal activo devuelve los últimos `ventana_seg` segundos de
     transcripción concatenados en un solo bloque de texto, más metadatos.
+
+    Nota sobre ventana: la columna `timestamp` en DB es el INICIO del audio
+    capturado (no el momento de inserción), por lo que siempre hay un lag
+    natural entre wall-clock y el último timestamp (captura + inferencia
+    ≈ 45-60s). Para medir fluidez y ventana de texto se ancla al
+    MAX(timestamp) por canal, NO a datetime.now(); así la medición es
+    correcta aunque haya backlog en el pipeline.
     """
     conn.row_factory = sqlite3.Row
     cutoff_canal = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-    cutoff_texto = (datetime.now() - timedelta(seconds=ventana_seg)).strftime("%Y-%m-%d %H:%M:%S")
 
     # Canales activos — filtra por heartbeat (el worker lo actualiza cada 30s
     # independientemente de si hay transcripciones; last_seen solo se actualiza al guardar)
@@ -99,6 +105,25 @@ def get_latest_v2(conn: sqlite3.Connection, n_canales: int = 20,
     resultado = []
     for cs in canales:
         cid = cs["channel_id"]
+
+        # Ancla la ventana al chunk más reciente del canal (no al wall clock).
+        anchor_row = conn.execute(
+            "SELECT MAX(timestamp) FROM transcriptions WHERE channel_id = ?",
+            (cid,)
+        ).fetchone()
+        anchor_ts = anchor_row[0] if anchor_row else None
+
+        if anchor_ts:
+            try:
+                anchor_dt   = datetime.fromisoformat(anchor_ts)
+                cutoff_dt   = anchor_dt - timedelta(seconds=ventana_seg)
+                cutoff_texto = cutoff_dt.isoformat(sep=" ", timespec="milliseconds")
+            except Exception:
+                cutoff_texto = (datetime.now() - timedelta(seconds=ventana_seg)
+                                ).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            cutoff_texto = (datetime.now() - timedelta(seconds=ventana_seg)
+                            ).strftime("%Y-%m-%d %H:%M:%S")
 
         # Últimas filas dentro de la ventana de tiempo
         rows = conn.execute("""
@@ -131,7 +156,7 @@ def get_latest_v2(conn: sqlite3.Connection, n_canales: int = 20,
         ts_ultimo = ultimo["timestamp"] if ultimo else cs["last_seen"]
         solo_silencio = not textos
 
-        # Fluidez: chunks procesados en la ventana de visualización
+        # Fluidez: chunks procesados en la ventana (anclada al último chunk)
         chunks_min = conn.execute(
             "SELECT COUNT(*) FROM transcriptions WHERE channel_id=? AND timestamp>=?",
             (cid, cutoff_texto)

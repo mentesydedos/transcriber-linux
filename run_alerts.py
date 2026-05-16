@@ -2,8 +2,9 @@
 """
 run_alerts.py — Arranca el dashboard de alertas AlertaTV.
 Uso:
-  venv\Scripts\python run_alerts.py
-  venv\Scripts\python run_alerts.py --port 5001
+  source venv/bin/activate
+  python run_alerts.py
+  python run_alerts.py --port 5001
 """
 import sys
 import logging
@@ -11,6 +12,8 @@ import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+Path("logs").mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,

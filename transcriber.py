@@ -1,62 +1,84 @@
 """
-transcriber.py — Servidor centralizado de inferencia Whisper
-Arquitectura: N hilos persistentes, cada uno bloquea en la cola y procesa
-en cuanto llega un chunk. Sin batching → sin gaps de pipeline.
+transcriber.py — Worker de inferencia Qwen3-ASR-1.7B (GPU o CPU)
+
+Arquitectura:
+  - Se lanzan N instancias en paralelo (multiprocessing), cada una con su copia
+    del modelo. Típico: 1× GPU (batch=4, fp16) + 2× CPU (batch=1, fp32, 8 hilos).
+  - Todas leen de una jobs_queue compartida que alimenta el manager vía dispatcher.
+  - Cada item de la cola: {channel_id, channel_name, audio, chunk_sec}.
 """
 
+import os
 import sqlite3
 import time
 import logging
 import sys
 import threading
+import queue as _queue
 import numpy as np
+import torch
 from datetime import datetime, timedelta
 from pathlib import Path
-from faster_whisper import WhisperModel
+from qwen_asr import Qwen3ASRModel
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL_NAME   = "small"
-DEVICE       = "cpu"
-# int8 CPU: misma calidad que float16, más rápido en CPU
-# 8 workers × 4 threads = 32 hilos causan contención severa de memoria/BLAS
-# 4 workers × 8 threads = 32 hilos, cada worker tiene recursos dedicados → 2-3s/chunk
-PARALLEL_WORKERS = 4
-CPU_THREADS      = 8
+MODEL_NAME        = "Qwen/Qwen3-ASR-0.6B"
+MODEL_CACHE_DIR   = "./models"
+SAMPLE_RATE       = 16000
+LANGUAGE          = "Spanish"        # None = detección automática
+GPU_BATCH_SIZE    = 4                # hasta 4 chunks simultáneos en la T1000 8GB
+CPU_BATCH_SIZE    = 1                # en CPU batch>1 solo añade overhead
+BATCH_WAIT_MS     = 150              # esperar 150ms para agrupar chunks antes de inferir (solo GPU)
+MAX_NEW_TOKENS    = 128              # 128 basta para ~30s de habla densa; 256 ralentiza 20-30% sin mejorar output
 
-FILE_WINDOW_MIN = 30
-DB_PATH         = "transcriptions.db"
-ALERTS_DB       = Path("alerts.db")
-OUTPUT_DIR      = Path("output")
-LOG_DIR         = Path("logs")
+FILE_WINDOW_MIN   = 30
+DB_PATH           = "transcriptions.db"
+ALERTS_DB         = Path("alerts.db")
+OUTPUT_DIR        = Path("output")
+LOG_DIR           = Path("logs")
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-def setup_logger() -> logging.Logger:
+def setup_logger(worker_name: str = "transcriber") -> logging.Logger:
+    """Un logger por worker. worker_name ∈ {'gpu', 'cpu-1', 'cpu-2', ...}."""
     LOG_DIR.mkdir(exist_ok=True)
-    logger = logging.getLogger("transcriber")
+    logger = logging.getLogger(f"transcriber.{worker_name}")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
-        # Solo archivo — el terminal del manager muestra su propio dashboard limpio
+        # Archivo común para todos los workers (fácil de seguir con tail)
         fh = logging.FileHandler(LOG_DIR / "transcriber.log", encoding='utf-8')
-        fh.setFormatter(logging.Formatter("%(asctime)s [TRANSCRIBER] %(levelname)s: %(message)s"))
+        fh.setFormatter(logging.Formatter(
+            f"%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
         logger.addHandler(fh)
-        # Errores críticos sí aparecen en consola
         sh = logging.StreamHandler()
         sh.setLevel(logging.ERROR)
-        sh.setFormatter(logging.Formatter("%(asctime)s [TRANSCRIBER] %(levelname)s: %(message)s"))
+        sh.setFormatter(logging.Formatter(
+            f"%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
         logger.addHandler(sh)
     return logger
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
-_db_lock = threading.Lock()   # serializa escrituras entre hilos
+_db_lock = threading.Lock()
 
 def save_to_db(channel_id: int, channel_name: str, text: str,
-               confidence: float, duration: float) -> str:
-    now     = datetime.now()
-    ts      = now.isoformat(sep=" ", timespec="seconds")
-    unix_ts = now.timestamp()
+               duration: float, start_ts: str = None) -> str:
+    """Guarda la transcripción en DB.
+    start_ts: ISO de CUANDO se transmitió el audio (no cuando se inferió).
+              Si es None, usa now() como fallback (modo legado).
+    """
+    if start_ts:
+        # Parseamos para obtener unix_ts consistente con el timestamp textual
+        try:
+            dt = datetime.fromisoformat(start_ts)
+        except ValueError:
+            dt = datetime.now()
+        ts = start_ts
+    else:
+        dt = datetime.now()
+        ts = dt.isoformat(sep=" ", timespec="milliseconds")
+    unix_ts = dt.timestamp()
     with _db_lock:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         try:
@@ -65,7 +87,7 @@ def save_to_db(channel_id: int, channel_name: str, text: str,
                 """INSERT INTO transcriptions
                    (channel_id, channel_name, timestamp, unix_ts, text, confidence, duration_sec)
                    VALUES (?,?,?,?,?,?,?)""",
-                (channel_id, channel_name, ts, unix_ts, text, confidence, duration))
+                (channel_id, channel_name, ts, unix_ts, text, None, duration))
             rowid = cursor.lastrowid
             conn.execute(
                 "INSERT INTO transcriptions_fts(rowid, text, channel_name) VALUES (?,?,?)",
@@ -83,7 +105,6 @@ def save_to_db(channel_id: int, channel_name: str, text: str,
 
 # ── EPG ───────────────────────────────────────────────────────────────────────
 def _get_epg_programme(channel_name: str, timestamp: str) -> str:
-    """Retorna el título del programa EPG activo en el momento dado, o ''."""
     try:
         conn = sqlite3.connect(str(ALERTS_DB), timeout=5)
         row  = conn.execute("""
@@ -96,7 +117,6 @@ def _get_epg_programme(channel_name: str, timestamp: str) -> str:
     except Exception:
         return ''
 
-
 # ── Rotación de archivos ──────────────────────────────────────────────────────
 def _window_bounds(dt: datetime):
     minute = (dt.minute // FILE_WINDOW_MIN) * FILE_WINDOW_MIN
@@ -104,173 +124,258 @@ def _window_bounds(dt: datetime):
     end    = start + timedelta(minutes=FILE_WINDOW_MIN)
     return start, end
 
+def _srt_time(dt: datetime, origin: datetime) -> str:
+    """HH:MM:SS,mmm desde origin (inicio del bloque SRT)."""
+    delta = dt - origin
+    if delta.total_seconds() < 0:
+        delta = timedelta(0)
+    total_ms = int(delta.total_seconds() * 1000)
+    h, rem = divmod(total_ms, 3600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms  = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
 class FileWindow:
+    """Escribe TXT legible y SRT (compatible con reproductores de video) por
+    bloques de 30 min. El SRT tiene timestamps relativos al inicio del bloque,
+    el TXT tiene timestamps absolutos con milisegundos."""
     def __init__(self, channel_id: int, channel_name: str):
         self.channel_id   = channel_id
         self.channel_name = channel_name
         self.safe_name    = "".join(c if c.isalnum() else "_" for c in channel_name)
-        self.filename     = f"canal_{channel_id:02d}_{self.safe_name}.txt"
+        self.base         = f"canal_{channel_id:02d}_{self.safe_name}"
+        self.window_start = None   # inicio del bloque (origin para SRT)
         self.window_end   = None
-        self.fh           = None
+        self.fh_txt       = None
+        self.fh_srt       = None
+        self.srt_idx      = 0
         self._rotate(datetime.now())
 
     def _rotate(self, now: datetime):
-        if self.fh and not self.fh.closed:
-            self.fh.flush(); self.fh.close()
+        for fh in (self.fh_txt, self.fh_srt):
+            if fh and not fh.closed:
+                fh.flush(); fh.close()
         start, end = _window_bounds(now)
-        self.window_end = end
+        self.window_start = start
+        self.window_end   = end
+        self.srt_idx      = 0
         folder = OUTPUT_DIR / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
         folder.mkdir(parents=True, exist_ok=True)
-        self.fh = open(folder / self.filename, "a", encoding="utf-8")
-        # Cabecera EPG al inicio de cada ventana de media hora
+        self.fh_txt = open(folder / f"{self.base}.txt", "a", encoding="utf-8")
+        self.fh_srt = open(folder / f"{self.base}.srt", "a", encoding="utf-8")
         ts_str    = now.strftime('%Y-%m-%d %H:%M:%S')
         programme = _get_epg_programme(self.channel_name, ts_str)
         header    = f"[EPG] {programme}" if programme else "[EPG] sin datos"
-        self.fh.write(f"{header}\n")
-        self.fh.flush()
+        self.fh_txt.write(f"# {header}\n"
+                          f"# Bloque: {start.isoformat(sep=' ')} → {end.isoformat(sep=' ')}\n"
+                          f"# Formato: [start → end] texto\n")
+        self.fh_txt.flush()
 
-    def write(self, ts: str, text: str):
-        now = datetime.now()
-        if now >= self.window_end:
-            self._rotate(now)
-        self.fh.write(f"[{ts}] {text}\n")
-        self.fh.flush()
+    def write(self, start_ts: str, end_ts: str, text: str):
+        """start_ts/end_ts: ISO con milisegundos (tiempo real del audio)."""
+        try:
+            start_dt = datetime.fromisoformat(start_ts)
+            end_dt   = datetime.fromisoformat(end_ts)
+        except Exception:
+            start_dt = end_dt = datetime.now()
+
+        if start_dt >= self.window_end:
+            self._rotate(start_dt)
+
+        # TXT legible con timestamp absoluto [start → end]
+        self.fh_txt.write(f"[{start_ts} → {end_ts[11:]}] {text}\n")
+        self.fh_txt.flush()
+
+        # SRT con timestamps relativos al inicio del bloque
+        self.srt_idx += 1
+        self.fh_srt.write(
+            f"{self.srt_idx}\n"
+            f"{_srt_time(start_dt, self.window_start)} --> "
+            f"{_srt_time(end_dt, self.window_start)}\n"
+            f"{text}\n\n"
+        )
+        self.fh_srt.flush()
 
     def close(self):
-        if self.fh and not self.fh.closed:
-            self.fh.flush(); self.fh.close()
+        for fh in (self.fh_txt, self.fh_srt):
+            if fh and not fh.closed:
+                fh.flush(); fh.close()
 
-# ── Transcripción ─────────────────────────────────────────────────────────────
-def transcribe_chunk(model: WhisperModel, audio: np.ndarray) -> tuple[str, float]:
-    segments, _ = model.transcribe(
-        audio,
-        language="es",
-        beam_size=2,
-        vad_filter=True,
-        vad_parameters=dict(
-            min_silence_duration_ms=500,
-            speech_pad_ms=100,
-            threshold=0.5,        # más estricto: filtra mejor música de fondo
-        ),
-        condition_on_previous_text=False,
-        no_speech_threshold=0.6,
-        compression_ratio_threshold=2.4,
+# ── Inferencia Qwen3-ASR ──────────────────────────────────────────────────────
+def _is_silent_or_noise(text: str) -> bool:
+    """Detecta si el texto devuelto es silencio, música, o un marcador vacío."""
+    if not text:
+        return True
+    cleaned = text.strip().strip(".,;:¿?¡!—-–…").lower()
+    if not cleaned:
+        return True
+    # Marcadores comunes devueltos por Qwen3-ASR cuando no hay habla clara
+    markers = {"[música]", "[music]", "(música)", "(music)", "[silencio]", "[silence]"}
+    return cleaned in markers
+
+def transcribe_batch(model: Qwen3ASRModel, audios: list[np.ndarray]) -> list[str]:
+    """Inferencia batch. Devuelve lista de strings (vacío si es silencio/ruido)."""
+    batch = [(a, SAMPLE_RATE) for a in audios]
+    results = model.transcribe(
+        audio=batch,
+        language=LANGUAGE,
     )
-    texts, confidences = [], []
-    for seg in segments:
-        if seg.no_speech_prob >= 0.6 or seg.avg_logprob < -1.0:
-            continue
-        t = seg.text.strip()
-        if not t:
-            continue
-        texts.append(t)
-        confidence = min(1.0, max(0.0, (seg.avg_logprob + 1.2) / 1.0))
-        confidences.append(confidence)
-    text       = " ".join(texts).strip()
-    confidence = float(np.mean(confidences)) if confidences else 0.0
-    return text, confidence
+    out = []
+    for r in results:
+        text = (r.text or "").strip()
+        out.append("" if _is_silent_or_noise(text) else text)
+    return out
 
 # ── Loop principal ────────────────────────────────────────────────────────────
-def run(audio_queue, model_name: str = MODEL_NAME, device: str = DEVICE,
-        parallel_workers: int = PARALLEL_WORKERS, cpu_threads: int = CPU_THREADS):
-    logger = setup_logger()
-    compute = "float16" if device == "cuda" else "int8"
-    logger.info(f"Cargando '{model_name}' en {device} ({compute}) — {parallel_workers} workers × {cpu_threads} threads...")
+def run(audio_queue, model_name: str = MODEL_NAME, device: str = "cuda",
+        worker_name: str = None, threads: int = None,
+        batch_size: int = None, ready_event=None):
+    """
+    Worker de inferencia. Una instancia por proceso.
 
-    model = WhisperModel(
+    Args:
+      audio_queue : mp.Queue con items {channel_id, channel_name, audio, chunk_sec}
+      device      : 'cuda' | 'cpu'
+      worker_name : etiqueta para los logs ('gpu', 'cpu-1', ...). Autogenerada si None.
+      threads     : hilos CPU cuando device='cpu' (ignorado en GPU)
+      batch_size  : override; por defecto 4 en GPU, 1 en CPU
+      ready_event : mp.Event que se setea cuando el modelo terminó de cargar + warmup
+    """
+    # Defaults por device
+    if worker_name is None:
+        worker_name = device
+    if batch_size is None:
+        batch_size = GPU_BATCH_SIZE if device == "cuda" else CPU_BATCH_SIZE
+
+    # Hilos CPU (debe hacerse ANTES de importar/usar torch ops)
+    if device == "cpu" and threads is not None:
+        torch.set_num_threads(threads)
+        os.environ.setdefault("OMP_NUM_THREADS", str(threads))
+        os.environ.setdefault("MKL_NUM_THREADS", str(threads))
+
+    logger = setup_logger(worker_name)
+
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            logger.error("CUDA no disponible — worker GPU no puede arrancar")
+            sys.exit(1)
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_cap  = torch.cuda.get_device_capability(0)
+        use_bf16 = gpu_cap[0] >= 8
+        dtype    = torch.bfloat16 if use_bf16 else torch.float16
+        dtype_str = "bf16" if use_bf16 else "fp16"
+        device_map = "cuda:0"
+        logger.info(f"GPU: {gpu_name} (compute {gpu_cap[0]}.{gpu_cap[1]}) — dtype={dtype_str}")
+    elif device == "cpu":
+        dtype     = torch.float32
+        dtype_str = "fp32"
+        device_map = "cpu"
+        logger.info(f"CPU worker — hilos={threads or 'default'} dtype={dtype_str}")
+    else:
+        logger.error(f"device desconocido: {device!r}")
+        sys.exit(1)
+
+    logger.info(f"Cargando {model_name} (batch_size={batch_size})...")
+
+    Path(MODEL_CACHE_DIR).mkdir(exist_ok=True)
+
+    model = Qwen3ASRModel.from_pretrained(
         model_name,
-        device=device,
-        compute_type=compute,
-        cpu_threads=cpu_threads,        # intra_threads: cores por inferencia
-        download_root="./models",
-        num_workers=parallel_workers,   # inter_threads: N inferencias simultáneas en CTranslate2
+        dtype=dtype,
+        device_map=device_map,
+        max_inference_batch_size=batch_size,
+        max_new_tokens=MAX_NEW_TOKENS,
+        cache_dir=MODEL_CACHE_DIR,
     )
 
-    # Pre-calentar modelo y VAD antes de abrir hilos
-    logger.info("Pre-calentando VAD y JIT...")
+    logger.info("Pre-calentando el modelo...")
     try:
-        transcribe_chunk(model, np.zeros(16000, dtype=np.float32))
-    except Exception:
-        pass
-    logger.info(f"Modelo listo. {PARALLEL_WORKERS} hilos persistentes arrancando...")
+        warmup_audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
+        transcribe_batch(model, [warmup_audio])
+    except Exception as e:
+        logger.warning(f"Warmup falló (no crítico): {e}")
+
+    logger.info("Modelo listo — iniciando loop de inferencia")
+    if ready_event is not None:
+        ready_event.set()
 
     file_windows: dict[int, FileWindow] = {}
-    file_lock  = threading.Lock()
     stats: dict[int, int] = {}
-    stats_lock = threading.Lock()
 
-    def process_one(item: dict):
-        """Transcribe un chunk y guarda. Llamado desde hilo worker."""
-        cid       = item["channel_id"]
-        cname     = item["channel_name"]
-        audio     = item["audio"]
-        chunk_sec = item.get("chunk_sec", 8)
+    def _drain_queue(first_item: dict, max_items: int) -> list[dict]:
+        """Recoge hasta max_items de la cola (el primero ya lo tenemos).
+        Solo útil cuando batch_size > 1 (GPU)."""
+        batch = [first_item]
+        if max_items <= 1:
+            return batch
+        deadline = time.time() + (BATCH_WAIT_MS / 1000.0)
+        while len(batch) < max_items:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                batch.append(audio_queue.get(timeout=remaining))
+            except Exception:
+                break
+        return batch
 
-        # Asegurar FileWindow (con lock)
-        with file_lock:
+    last_stats = time.time()
+
+    while True:
+        try:
+            first = audio_queue.get(timeout=5)
+        except Exception:
+            if time.time() - last_stats > 300:
+                logger.info(f"Idle | Chunks procesados: {stats}")
+                last_stats = time.time()
+            continue
+
+        batch = _drain_queue(first, batch_size)
+
+        t0 = time.time()
+        try:
+            texts = transcribe_batch(model, [item["audio"] for item in batch])
+        except Exception as e:
+            logger.error(f"Error en inferencia batch: {e}", exc_info=True)
+            continue
+        elapsed = time.time() - t0
+
+        for item, text in zip(batch, texts):
+            cid       = item["channel_id"]
+            cname     = item["channel_name"]
+            chunk_sec = item.get("chunk_sec", 30)
+            start_ts  = item.get("start_ts")    # tiempo real del audio (no de inferencia)
+            end_ts    = item.get("end_ts")
+
             if cid not in file_windows:
                 file_windows[cid] = FileWindow(cid, cname)
 
-        # Inferencia GPU/CPU (paralela — CTranslate2 inter_threads lo permite)
-        t0 = time.time()
-        text, confidence = transcribe_chunk(model, audio)
-        elapsed = time.time() - t0
-
-        # Guardar en DB (serializado por _db_lock interno)
-        ts = save_to_db(cid, cname, text or "[~]", confidence, chunk_sec)
-
-        # Escribir a archivo (con lock)
-        with file_lock:
-            if text:
-                file_windows[cid].write(ts, text)
-
-        return cid, text, confidence, elapsed
-
-    def worker_loop(worker_id: int):
-        """
-        Hilo persistente: bloquea en la cola y procesa en cuanto llega un chunk.
-        No espera lotes — reacciona al instante. Clave para fluidez real.
-        """
-        while True:
             try:
-                item = audio_queue.get(timeout=5)
-            except Exception:
-                continue   # timeout normal — seguir esperando
-            try:
-                cid, text, conf, elapsed = process_one(item)
-                if text:
-                    logger.info(f"[{cid:02d}][{conf:.2f}]({elapsed:.1f}s) {text[:80]}")
-                else:
-                    logger.debug(f"[{cid:02d}] sin voz ({elapsed:.1f}s)")
-                with stats_lock:
-                    stats[cid] = stats.get(cid, 0) + 1
+                save_to_db(cid, cname, text or "[~]", chunk_sec, start_ts=start_ts)
             except Exception as e:
-                logger.error(f"[worker-{worker_id}] {e}", exc_info=True)
+                logger.error(f"[{cid:02d}] Error guardando en DB: {e}")
+                continue
 
-    # Lanzar N hilos persistentes
-    workers = [
-        threading.Thread(target=worker_loop, args=(i,), daemon=True, name=f"tw-{i}")
-        for i in range(parallel_workers)
-    ]
-    for w in workers:
-        w.start()
-    logger.info(f"{parallel_workers} workers activos — sistema listo")
+            if text and start_ts and end_ts:
+                try:
+                    file_windows[cid].write(start_ts, end_ts, text)
+                except Exception as e:
+                    logger.error(f"[{cid:02d}] Error escribiendo archivo: {e}")
 
-    # Hilo principal: solo monitorea estadísticas
-    last_stats = time.time()
-    while True:
-        time.sleep(30)
+                logger.info(f"[{cid:02d}]({elapsed:.1f}s/bs={len(batch)}) {text[:80]}")
+            elif text:
+                logger.warning(f"[{cid:02d}] item sin start_ts/end_ts (modo legado)")
+            else:
+                logger.debug(f"[{cid:02d}] sin voz ({elapsed:.1f}s)")
+
+            stats[cid] = stats.get(cid, 0) + 1
+
         if time.time() - last_stats > 300:
-            q_size = audio_queue.qsize()
-            with stats_lock:
-                s = dict(stats)
-            logger.info(f"Cola: {q_size} | Chunks procesados: {s}")
-            if q_size > 20:
-                logger.warning(f"Cola creciendo ({q_size}) — sistema atrasado")
+            logger.info(f"Chunks: {stats}")
             last_stats = time.time()
 
 
 if __name__ == "__main__":
     from multiprocessing import Queue
     q = Queue()
-    run(q)
+    run(q, device="cuda")

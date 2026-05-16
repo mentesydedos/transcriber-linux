@@ -349,45 +349,46 @@
   </div>
 
   <div style="overflow-x:auto;width:100%">
-    <table class="table mb-0 matches-table" style="width:100%;min-width:960px;table-layout:fixed">
+    <table class="table mb-0 matches-table" style="width:100%;min-width:1250px;table-layout:fixed">
       <colgroup>
-        <col style="width:140px">  <!-- Fecha/Hora señal -->
-        <col style="width:100px">  <!-- Canal -->
-        <col style="width:155px">  <!-- Programa (EPG) -->
-        <col style="width:105px">  <!-- Palabra -->
-        <col>                      <!-- Texto transcrito (flexible) -->
-        <col style="width:140px">  <!-- Detectado -->
+        <col style="width:155px">  <!-- Fecha/Hora señal (estimada al instante de la palabra) -->
+        <col style="width:95px">   <!-- Canal -->
+        <col style="width:194px">  <!-- Programa (EPG) +8 caracteres, wrap a 2 líneas -->
+        <col style="width:95px">   <!-- Palabra -->
+        <col>                      <!-- Texto transcrito (flexible, recibe el resto) -->
+        <col style="width:205px">  <!-- Detectado: cabe "YYYY-MM-DD HH:MM:SS" completo -->
       </colgroup>
       <thead>
         <tr>
-          <th>Fecha/Hora señal</th>
+          <th title="Hora estimada del momento exacto en que se mencionó la palabra (no el inicio del chunk)">Fecha/Hora señal</th>
           <th>Canal</th>
           <th>Programa (EPG)</th>
           <th>Palabra</th>
-          <th>Texto transcrito</th>
+          <th>Texto transcrito (±30 palabras de contexto)</th>
           <th>Detectado</th>
         </tr>
       </thead>
       <tbody>
         {% for m in matches %}
         <tr>
-          <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle">
-            {{ m.timestamp[:19] if m.timestamp else '—' }}
+          <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle"
+              title="Inicio del chunk: {{ m.timestamp[:19] if m.timestamp else '—' }}">
+            {{ m.precise_timestamp[:19] if m.precise_timestamp else (m.timestamp[:19] if m.timestamp else '—') }}
           </td>
           <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle"
               title="{{ m.channel_name }}">
             {{ m.channel_name }}
           </td>
-          <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle"
+          <td style="vertical-align:middle"
               title="{{ prog_map.get(m.id, '') or '' }}">
-            {{ prog_map.get(m.id, '') or '—' }}
+            <div class="epg-cell">{{ prog_map.get(m.id, '') or '—' }}</div>
           </td>
           <td style="vertical-align:middle;overflow:hidden">
             <span class="kw" style="white-space:nowrap">{{ m.keyword }}</span>
           </td>
           <td style="vertical-align:middle">
-            <div class="mtext" title="{{ m.matched_text }}">
-              {{ m.matched_text | highlight(m.keyword, s.phonetic) }}
+            <div class="mtext mtext-wide" title="{{ m.matched_text }}">
+              {{ m.centered_text | highlight(m.keyword, s.phonetic) }}
             </div>
           </td>
           <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
@@ -527,20 +528,24 @@
   }
 
   function makeRow(m) {
-    const ts      = m.timestamp ? m.timestamp.slice(0, 19) : '—';
-    const fat     = m.found_at  ? m.found_at.slice(0, 19)  : '';
-    const rawText = esc(m.matched_text || '');
-    const kwEsc   = esc(m.keyword || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const txt     = kwEsc
-      ? rawText.replace(new RegExp(kwEsc, 'gi'), s => '<mark>' + s + '</mark>')
-      : rawText;
-    const tdBase  = 'style="vertical-align:middle"';
+    // Usa precise_timestamp (instante exacto de la palabra) y centered_text
+    // (recortado a 30 palabras antes y 30 después). Los provee el backend en
+    // el endpoint /api/searches/.../matches.
+    const ts       = (m.precise_timestamp || m.timestamp || '').slice(0, 19) || '—';
+    const tsTitle  = m.timestamp ? ('Inicio del chunk: ' + m.timestamp.slice(0, 19)) : '';
+    const fat      = m.found_at  ? m.found_at.slice(0, 19)  : '';
+    const rawCent  = esc(m.centered_text || m.matched_text || '');
+    const rawFull  = esc(m.matched_text || '');
+    const kwEsc    = esc(m.keyword || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const txt      = kwEsc
+      ? rawCent.replace(new RegExp(kwEsc, 'gi'), s => '<mark>' + s + '</mark>')
+      : rawCent;
     return `<tr style="animation:fadeIn .4s ease">
-      <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle">${ts}</td>
+      <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle" title="${tsTitle}">${ts}</td>
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle">${esc(m.channel_name)}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
       <td style="vertical-align:middle;overflow:hidden"><span class="kw" style="white-space:nowrap">${esc(m.keyword)}</span></td>
-      <td style="vertical-align:middle"><div class="mtext" title="${esc(m.matched_text)}">${txt}</div></td>
+      <td style="vertical-align:middle"><div class="mtext mtext-wide" title="${rawFull}">${txt}</div></td>
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
     </tr>`;
   }
@@ -603,6 +608,25 @@
 .matches-table td:last-child  { padding-right: 1.5rem !important; }
 .matches-table th:first-child,
 .matches-table td:first-child { padding-left:  1.5rem !important; }
+/* Texto centrado en la palabra (60 palabras de contexto). Wrap en 2 líneas
+   con elipsis si excede; el title del td muestra el chunk completo. */
+.matches-table .mtext-wide {
+  font-size: .85rem; color: var(--text2);
+  white-space: normal; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  max-width: 100%; line-height: 1.45;
+}
+.matches-table .mtext-wide mark { background: #f97316; color: #fff;
+  border-radius: 3px; padding: 0 3px; font-weight: 600; }
+/* Celda EPG: wrap a 2 líneas con elipsis cuando excede.
+   Va aplicado a un <div> dentro del <td> porque -webkit-box no funciona en
+   table-cell. */
+.matches-table .epg-cell {
+  font-size: .78rem; color: var(--accent);
+  white-space: normal; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  line-height: 1.35; word-break: break-word;
+}
 </style>
 <script>
 // Actualiza el label del botón de cada dropdown según los checks activos

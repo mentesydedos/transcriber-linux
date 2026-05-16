@@ -1,0 +1,22 @@
+[Unit]
+Description=AlertaTV Dashboard (Flask) - Monitoreo y alertas por email/telegram
+After=network-online.target transcriber.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python run_alerts.py --port 5001 --host 0.0.0.0
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

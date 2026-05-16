@@ -190,6 +190,9 @@ a:hover { color: #60a5fa; }
       <a class="nav-link {% if '/searches/new' in request.path %}active{% endif %}" href="/searches/new">
         <i class="bi bi-plus-circle"></i> Nueva búsqueda
       </a>
+      <a class="nav-link {% if request.path=='/ask' %}active{% endif %}" href="/ask">
+        <i class="bi bi-robot"></i> Consulta IA
+      </a>
       <a class="nav-link {% if request.path=='/profile' %}active{% endif %}" href="/profile">
         <i class="bi bi-person-circle"></i> Mi perfil
       </a>

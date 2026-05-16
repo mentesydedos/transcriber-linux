@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Consulta IA — Monitoreo ITESO{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <h1 class="page-title mb-0"><i class="bi bi-robot text-accent me-2"></i>Consulta IA</h1>
+  <span class="ms-3 section-label">RAG · Qwen2.5-3B · local</span>
+</div>
+
+<p style="color:var(--text2); font-size:.875rem; max-width:780px">
+  Escribe una pregunta en lenguaje natural. La IA buscará fragmentos relevantes
+  en las transcripciones recientes y generará una respuesta con fuentes citadas.
+  Usa <kbd>Ctrl</kbd>+<kbd>Enter</kbd> para enviar.
+</p>
+
+<div class="card p-3 mb-3">
+  <textarea id="q" class="form-control mb-2" rows="3"
+            placeholder="Ej: ¿Qué dijeron sobre las elecciones hoy? ¿Hubo noticias de accidentes en Las Estrellas?"
+            autofocus></textarea>
+  <div class="d-flex gap-2 flex-wrap align-items-center">
+    <select id="rango" class="form-select form-select-sm" style="width:auto">
+      {% for k, v in rangos %}
+        <option value="{{k}}" {% if k == '24h' %}selected{% endif %}>{{v}}</option>
+      {% endfor %}
+    </select>
+    <select id="canal" class="form-select form-select-sm" style="width:auto">
+      <option value="">Todos los canales</option>
+      {% for c in canales %}
+        <option value="{{c}}">{{c}}</option>
+      {% endfor %}
+    </select>
+    <select id="top_n" class="form-select form-select-sm" style="width:auto">
+      {% for n in [5, 10, 15, 20, 30] %}
+        <option value="{{n}}" {% if n == 15 %}selected{% endif %}>{{n}} fragmentos</option>
+      {% endfor %}
+    </select>
+    <button id="go" class="btn btn-primary btn-sm" onclick="ask()">
+      <i class="bi bi-send me-1"></i>Preguntar
+    </button>
+    <span id="status" style="color:var(--text2); font-size:.85rem"></span>
+  </div>
+</div>
+
+<div class="card p-3 mb-3" style="border-left:3px solid var(--accent)">
+  <div class="section-label mb-2">Respuesta</div>
+  <div id="answer" style="white-space:pre-wrap; line-height:1.6; min-height:30px;
+       color:var(--text2)">La respuesta aparecerá aquí…</div>
+</div>
+
+<div id="sources_wrap" style="display:none">
+  <div class="section-label mb-2">Fragmentos usados como contexto</div>
+  <div id="sources"></div>
+</div>
+
+<style>
+.src { padding: 10px 12px; margin: 6px 0; background: var(--card);
+       border-left: 2px solid #3b82f6; border-radius: 6px; font-size: .85rem; }
+.src .head { color: #60a5fa; font-weight: 600; margin-bottom: 4px; font-size:.8rem; }
+.src .head .ts { color: var(--muted); font-weight: normal; margin-left: 8px; font-size:.75rem; }
+.src .txt { color: var(--text2); }
+.spin { display:inline-block; width:12px; height:12px; border:2px solid var(--accent);
+        border-top-color: transparent; border-radius:50%; animation: spin .8s linear infinite;
+        vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script>
+async function ask() {
+  const q      = document.getElementById('q').value.trim();
+  const rango  = document.getElementById('rango').value;
+  const canal  = document.getElementById('canal').value;
+  const top_n  = parseInt(document.getElementById('top_n').value);
+  if (!q) return;
+
+  const goBtn   = document.getElementById('go');
+  const status  = document.getElementById('status');
+  const ans     = document.getElementById('answer');
+  const srcWrap = document.getElementById('sources_wrap');
+  const srcDiv  = document.getElementById('sources');
+  goBtn.disabled = true;
+  status.innerHTML = '<span class="spin"></span> buscando contexto…';
+  ans.style.color = 'var(--text)';
+  ans.textContent = '';
+  srcWrap.style.display = 'none';
+  srcDiv.innerHTML = '';
+
+  try {
+    const resp = await fetch('/api/ask', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({q, rango, canal, top_n})
+    });
+    if (!resp.ok) {
+      ans.textContent = 'Error: ' + resp.status + ' ' + await resp.text();
+      return;
+    }
+    const reader = resp.body.getReader();
+    const dec    = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch(e) { continue; }
+        if (evt.type === 'sources') {
+          if (evt.items.length === 0) {
+            status.textContent = 'sin contexto — responderé sin fuentes';
+          } else {
+            status.innerHTML = '<span class="spin"></span> generando respuesta (' + evt.items.length + ' fragmentos)…';
+            for (const s of evt.items) {
+              const el = document.createElement('div');
+              el.className = 'src';
+              el.innerHTML = '<div class="head">' + escapeHtml(s.channel_name)
+                           + '<span class="ts">' + escapeHtml(s.timestamp) + '</span></div>'
+                           + '<div class="txt">' + escapeHtml(s.text) + '</div>';
+              srcDiv.appendChild(el);
+            }
+            srcWrap.style.display = 'block';
+          }
+        } else if (evt.type === 'token') {
+          ans.textContent += evt.text;
+        } else if (evt.type === 'done') {
+          status.textContent = 'respuesta en ' + evt.elapsed.toFixed(1) + 's';
+        } else if (evt.type === 'error') {
+          ans.textContent = 'Error: ' + evt.message;
+        }
+      }
+    }
+  } catch(e) {
+    ans.textContent = 'Error de red: ' + e.message;
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+function escapeHtml(s) {
+  const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+document.getElementById('q').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') ask();
+});
+</script>
+{% endblock %}

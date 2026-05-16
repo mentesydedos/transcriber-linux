@@ -1,9 +1,19 @@
 """
-manager.py — Orquestador con transcripción centralizada en GPU
-Arquitectura:
-  - 1 proceso transcriber: carga modelo UNA VEZ en GPU, procesa cola
-  - N procesos worker: capturan audio con FFmpeg, envían a la cola
-Sin competencia de CUDA → calidad y velocidad máximas.
+manager.py — Orquestador del sistema de transcripción TV (Linux + Qwen3-ASR)
+
+Arquitectura híbrida GPU + CPU:
+  - 1 proceso worker FFmpeg por canal (N canales)
+      → cada uno con su PROPIA cola de salida (maxsize=3, drop-oldest)
+  - Pool heterogéneo de inference workers:
+      · 1× GPU (Qwen-1.7B fp16, batch=4)
+      · M× CPU (Qwen-1.7B fp32, batch=1, 8 hilos c/u)
+  - Thread dispatcher en el manager: recorre las colas por canal y empuja
+    el chunk del canal MÁS ATRASADO a la jobs_queue global. Los inference
+    workers consumen esa cola (work-stealing natural).
+
+Garantías:
+  - Un canal roto solo llena su cola → drop-oldest → no bloquea a los demás.
+  - Si un inference worker cae, los otros siguen; el manager lo reinicia.
 """
 
 import sys
@@ -15,11 +25,13 @@ import os
 import atexit
 import json
 import sqlite3
+import queue as _queue
+import threading
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Event as MPEvent
 
 import worker
 import transcriber as transcriber_mod
@@ -31,24 +43,39 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # ── Config ────────────────────────────────────────────────────────────────────
-M3U_FILE      = "TV audio.m3u"
-MAX_CHANNELS  = 8
-SKIP_CHANNELS = set()           # sin omisiones
+M3U_FILE          = "TV audio.m3u"
+MAX_CHANNELS      = 8
+SKIP_CHANNELS     = set()
 
-# Transcribers: GPU + CPU en paralelo sobre la misma cola
-TRANSCRIBER_MODEL      = "small"
-GPU_PARALLEL_WORKERS   = 2      # GPU: 2 streams simultáneos (small float16)
-CPU_PARALLEL_WORKERS   = 4      # CPU: 4 workers × 6 threads = 24 hilos i9
-CPU_THREADS_PER_WORKER = 6
+TRANSCRIBER_MODEL = "Qwen/Qwen3-ASR-0.6B"
 
-HEALTH_INTERVAL  = 30
-HEARTBEAT_LIMIT  = 180
-DB_PATH          = "transcriptions.db"
+# Pool de inference workers. Cada entrada: (name, device, threads, weight, queue_maxsize)
+#   weight = cuántos chunks se le asignan por ronda (round-robin ponderado).
+#   Relación weights aproximada a la capacidad relativa medida en prod:
+#     GPU ~5.3× rt, CPU ~1.9× rt → ratio ~2.8:1, redondeado a 2:1 para dejar
+#     al CPU llevar un poco más de carga y bajar utilización del GPU.
+INFERENCE_POOL = [
+    # (name,   device, threads, weight, maxsize)
+    # Config óptima medida para Qwen-0.6B en este hardware (T1000 + i9-14900):
+    # 1 GPU + 1 CPU con 16 hilos → 15.9× rt, 0 drops. Agregar un 2° CPU no ayuda
+    # porque la contención de hilos entre workers reduce el throughput total
+    # (probado: 3 workers = 5.65× rt, peor que 2). La GPU al 98-100% es
+    # esperado y correcto a este throughput.
+    ("gpu",    "cuda", None,    2,      12),
+    ("cpu-1",  "cpu",  16,      1,      6),
+]
 
-LOG_DIR      = Path("logs")
+CHANNEL_QUEUE_MAXSIZE = 3          # drop-oldest por canal (3 × 30s = 90s buffer)
+DISPATCHER_POLL_MS    = 50         # granularidad del dispatcher
+
+HEALTH_INTERVAL   = 30
+HEARTBEAT_LIMIT   = 180
+DB_PATH           = "transcriptions.db"
+
+LOG_DIR           = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
-STATUS_FILE  = LOG_DIR / "status.json"
-FAILURES_LOG = LOG_DIR / "failures.log"
+STATUS_FILE       = LOG_DIR / "status.json"
+FAILURES_LOG      = LOG_DIR / "failures.log"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +84,6 @@ logging.basicConfig(
         logging.FileHandler(LOG_DIR / "manager.log", encoding='utf-8'),
     ]
 )
-# Errores siempre visibles en consola aunque el dashboard esté activo
 _console = logging.StreamHandler()
 _console.setLevel(logging.WARNING)
 _console.setFormatter(logging.Formatter("%(asctime)s [MANAGER] %(levelname)s: %(message)s"))
@@ -71,9 +97,24 @@ class Channel:
     name:          str
     url:           str
     process:       Optional[Process] = None
+    out_queue:     Optional[Queue]   = None      # mp.Queue(maxsize=3) exclusiva del canal
     restarts:      int = 0
     failed:        bool = False
-    last_restart:  Optional[datetime] = None   # momento del último reinicio
+    last_restart:  Optional[datetime] = None
+
+@dataclass
+class InferenceWorker:
+    name:          str
+    device:        str                           # 'cuda' | 'cpu'
+    threads:       Optional[int]
+    weight:        int              = 1          # peso en el round-robin del dispatcher
+    maxsize:       int              = 6          # tamaño de su cola de entrada
+    in_queue:      Optional[Queue]  = None       # cola exclusiva del worker
+    assigned:      int              = 0          # chunks asignados (para RR ponderado)
+    process:       Optional[Process] = None
+    ready_event:   object            = None      # mp.Event
+    restarts:      int                = 0
+    last_restart:  Optional[datetime] = None
 
 # ── Parser M3U ────────────────────────────────────────────────────────────────
 def parse_m3u(filepath: str) -> list[dict]:
@@ -121,7 +162,14 @@ def record_failure(ch: Channel, reason: str, action: str):
     except Exception:
         pass
 
-def write_status(channels: list[Channel], heartbeats: dict, transcriber_alive: bool):
+def _safe_qsize(q: Queue) -> int:
+    try:
+        return q.qsize()
+    except NotImplementedError:
+        return 0 if q.empty() else 1
+
+def write_status(channels: list[Channel], heartbeats: dict,
+                 inference_workers: list[InferenceWorker]):
     now   = datetime.now()
     estado = []
     for ch in channels:
@@ -138,12 +186,29 @@ def write_status(channels: list[Channel], heartbeats: dict, transcriber_alive: b
             "restarts": ch.restarts, "failed": ch.failed,
             "heartbeat": hb, "hb_age_sec": hb_age,
             "zombie": hb_age is not None and hb_age > HEARTBEAT_LIMIT and alive,
+            "queue_size": _safe_qsize(ch.out_queue) if ch.out_queue else 0,
+        })
+    inf_state = []
+    for iw in inference_workers:
+        alive = iw.process is not None and iw.process.is_alive()
+        ready = bool(iw.ready_event and iw.ready_event.is_set())
+        inf_state.append({
+            "name":       iw.name,
+            "device":     iw.device,
+            "threads":    iw.threads,
+            "weight":     iw.weight,
+            "alive":      alive,
+            "ready":      ready,
+            "restarts":   iw.restarts,
+            "queue_size": _safe_qsize(iw.in_queue) if iw.in_queue else 0,
+            "queue_max":  iw.maxsize,
+            "assigned":   iw.assigned,
         })
     payload = {
         "updated_at": now.isoformat(sep=" ", timespec="seconds"),
-        "transcriber": {"model": TRANSCRIBER_MODEL,
-                        "devices": "cuda+cpu", "alive": transcriber_alive},
-        "channels": estado,
+        "model":      TRANSCRIBER_MODEL,
+        "inference_workers": inf_state,
+        "channels":         estado,
     }
     try:
         STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -151,10 +216,13 @@ def write_status(channels: list[Channel], heartbeats: dict, transcriber_alive: b
         pass
 
 # ── Control de procesos ───────────────────────────────────────────────────────
-def start_worker(ch: Channel, audio_queue: Queue) -> Process:
+def start_channel_worker(ch: Channel) -> Process:
+    """Cada worker tiene su propia cola maxsize=3 con drop-oldest."""
+    if ch.out_queue is None:
+        ch.out_queue = Queue(maxsize=CHANNEL_QUEUE_MAXSIZE)
     p = Process(
         target=worker.run_worker,
-        args=(ch.id, ch.name, ch.url, audio_queue),
+        args=(ch.id, ch.name, ch.url, ch.out_queue),
         name=f"worker-{ch.id:02d}",
         daemon=True,
     )
@@ -162,24 +230,34 @@ def start_worker(ch: Channel, audio_queue: Queue) -> Process:
     logger.info(f"[Canal {ch.id:02d}] Worker iniciado PID={p.pid} name='{ch.name}'")
     return p
 
-def start_transcriber(audio_queue: Queue, device: str,
-                      parallel_workers: int, cpu_threads: int,
-                      name: str = "transcriber") -> Process:
+def start_inference_worker(iw: InferenceWorker) -> Process:
+    """Cada worker tiene su propia cola de entrada (creada si aún no existe)."""
+    iw.ready_event = MPEvent()
+    if iw.in_queue is None:
+        iw.in_queue = Queue(maxsize=iw.maxsize)
     p = Process(
         target=transcriber_mod.run,
-        args=(audio_queue, TRANSCRIBER_MODEL, device, parallel_workers, cpu_threads),
-        name=name,
+        kwargs={
+            "audio_queue":  iw.in_queue,
+            "model_name":   TRANSCRIBER_MODEL,
+            "device":       iw.device,
+            "worker_name":  iw.name,
+            "threads":      iw.threads,
+            "ready_event":  iw.ready_event,
+        },
+        name=f"inference-{iw.name}",
         daemon=True,
     )
     p.start()
-    logger.info(f"Transcriber '{name}' PID={p.pid} model={TRANSCRIBER_MODEL} device={device} "
-                f"workers={parallel_workers} threads={cpu_threads}")
+    logger.info(f"Inference worker '{iw.name}' PID={p.pid} "
+                f"device={iw.device} threads={iw.threads} "
+                f"weight={iw.weight} maxsize={iw.maxsize}")
     return p
 
-def stop_all(channels: list[Channel], transcriber_procs: list):
+def stop_all(channels: list[Channel], inference_workers: list[InferenceWorker]):
     logger.info("Deteniendo todos los procesos...")
-    todos = [ch.process for ch in channels if ch.process] + \
-            [p for p in transcriber_procs if p]
+    todos = [ch.process for ch in channels if ch.process]
+    todos += [iw.process for iw in inference_workers if iw.process]
     for p in todos:
         if p.is_alive():
             p.terminate()
@@ -191,34 +269,85 @@ def stop_all(channels: list[Channel], transcriber_procs: list):
         p.join(timeout=3)
     logger.info("Todos los procesos detenidos.")
 
-# Configs de cada transcriber: (device, parallel_workers, cpu_threads, name)
-_TRANSCRIBER_CONFIGS = [
-    ("cuda", GPU_PARALLEL_WORKERS, 8,                   "transcriber-gpu"),
-    ("cpu",  CPU_PARALLEL_WORKERS, CPU_THREADS_PER_WORKER, "transcriber-cpu"),
-]
+# ── Dispatcher ────────────────────────────────────────────────────────────────
+def _pick_worker(inference_workers: list[InferenceWorker]) -> Optional[InferenceWorker]:
+    """
+    Round-robin ponderado por weight:
+      - Solo considera workers con cola no llena
+      - Entre los disponibles, elige aquel con menor (assigned / weight)
+        → el más subutilizado respecto a su cuota relativa
+    """
+    available = [iw for iw in inference_workers
+                 if iw.in_queue is not None and _safe_qsize(iw.in_queue) < iw.maxsize]
+    if not available:
+        return None
+    return min(available, key=lambda iw: iw.assigned / max(iw.weight, 1))
+
+def dispatcher_loop(channels: list[Channel],
+                    inference_workers: list[InferenceWorker],
+                    stop_event: threading.Event):
+    """
+    Empuja chunks de las colas por canal a la cola del worker que toque según
+    el round-robin ponderado. Si TODAS las colas de workers están llenas,
+    espera (los channel workers harán drop-oldest por su cuenta si se saturan).
+    """
+    poll = DISPATCHER_POLL_MS / 1000.0
+    while not stop_event.is_set():
+        # 1. ¿Qué canal está más atrasado?
+        best_ch   = None
+        best_size = 0
+        for ch in channels:
+            if ch.out_queue is None:
+                continue
+            sz = _safe_qsize(ch.out_queue)
+            if sz > best_size:
+                best_size = sz
+                best_ch   = ch
+        if best_ch is None:
+            stop_event.wait(poll)
+            continue
+
+        # 2. ¿Qué worker debe tomarlo?
+        iw = _pick_worker(inference_workers)
+        if iw is None:
+            # Todas las colas de workers llenas: backpressure natural, esperamos
+            stop_event.wait(poll)
+            continue
+
+        # 3. Sacar del canal y encolar al worker
+        try:
+            item = best_ch.out_queue.get_nowait()
+        except _queue.Empty:
+            continue
+        try:
+            iw.in_queue.put(item, timeout=1.0)
+            iw.assigned += 1
+        except _queue.Full:
+            logger.warning(f"[dispatcher] cola {iw.name} llena — chunk canal {best_ch.id:02d} perdido")
 
 # ── Health check ──────────────────────────────────────────────────────────────
-def health_check(channels: list[Channel], audio_queue: Queue,
-                 transcriber_procs: list) -> list:
+def health_check(channels: list[Channel],
+                 inference_workers: list[InferenceWorker]):
     heartbeats = get_heartbeats()
     now        = datetime.now()
 
-    # Verificar cada transcriber
-    for i, (p, cfg) in enumerate(zip(transcriber_procs, _TRANSCRIBER_CONFIGS)):
-        if p and not p.is_alive():
-            device, pw, ct, name = cfg
-            logger.error(f"Transcriber '{name}' caído — reiniciando...")
-            record_failure(Channel(0, name, ""), f"Transcriber '{name}' caído", "Reinicio")
-            transcriber_procs[i] = start_transcriber(audio_queue, device, pw, ct, name)
+    # Inference workers
+    for iw in inference_workers:
+        if iw.process and not iw.process.is_alive():
+            logger.error(f"Inference worker '{iw.name}' caído — reiniciando...")
+            record_failure(Channel(0, f"inference-{iw.name}", ""),
+                           f"Inference worker '{iw.name}' caído", "Reinicio")
+            iw.restarts += 1
+            iw.last_restart = datetime.now()
+            iw.process = start_inference_worker(iw)
 
-    # Verificar workers
+    # Channel workers
     for ch in channels:
         if ch.failed:
             continue
 
         alive = ch.process is not None and ch.process.is_alive()
 
-        # Proceso muerto
         if not alive:
             exit_code = ch.process.exitcode if ch.process else "N/A"
             reason = f"Worker terminó (código={exit_code})"
@@ -227,10 +356,9 @@ def health_check(channels: list[Channel], audio_queue: Queue,
             logger.warning(f"[Canal {ch.id:02d}] {reason} — reinicio #{ch.restarts}")
             record_failure(ch, reason, f"Reinicio #{ch.restarts}")
             time.sleep(2)
-            ch.process = start_worker(ch, audio_queue)
+            ch.process = start_channel_worker(ch)
             continue
 
-        # Zombie (proceso vivo pero sin heartbeat)
         hb = heartbeats.get(ch.id)
         if hb:
             try:
@@ -246,38 +374,28 @@ def health_check(channels: list[Channel], audio_queue: Queue,
                 ch.restarts += 1
                 ch.last_restart = datetime.now()
                 time.sleep(2)
-                ch.process = start_worker(ch, audio_queue)
+                ch.process = start_channel_worker(ch)
 
-    all_alive = all(p is not None and p.is_alive() for p in transcriber_procs)
-    write_status(channels, heartbeats, all_alive)
-    return transcriber_procs
+    write_status(channels, heartbeats, inference_workers)
 
-ANSI_CLEAR   = "\033[2J\033[H"
-ANSI_BOLD    = "\033[1m"
-ANSI_RESET   = "\033[0m"
-ANSI_GREEN   = "\033[32m"
-ANSI_YELLOW  = "\033[33m"
-ANSI_RED     = "\033[31m"
-ANSI_CYAN    = "\033[36m"
-ANSI_DIM     = "\033[2m"
+ANSI_CLEAR    = "\033[2J\033[H"
+ANSI_BOLD     = "\033[1m"
+ANSI_RESET    = "\033[0m"
+ANSI_GREEN    = "\033[32m"
+ANSI_YELLOW   = "\033[33m"
+ANSI_RED      = "\033[31m"
+ANSI_CYAN     = "\033[36m"
+ANSI_DIM      = "\033[2m"
 ANSI_HIDE_CUR = "\033[?25l"
 ANSI_SHOW_CUR = "\033[?25h"
 
-def print_dashboard(channels: list[Channel], transcriber_procs: list,
+def print_dashboard(channels: list[Channel],
+                    inference_workers: list[InferenceWorker],
                     started_at: datetime):
     heartbeats = get_heartbeats()
     now        = datetime.now()
     uptime     = int((now - started_at).total_seconds())
     h, m, s    = uptime // 3600, (uptime % 3600) // 60, uptime % 60
-
-    def t_badge(p, label):
-        alive  = p is not None and p.is_alive()
-        color  = ANSI_GREEN if alive else ANSI_RED
-        symbol = "●" if alive else "✖"
-        return f"{color}{symbol}{ANSI_RESET} {label}"
-
-    gpu_badge = t_badge(transcriber_procs[0] if transcriber_procs else None, "GPU")
-    cpu_badge = t_badge(transcriber_procs[1] if len(transcriber_procs) > 1 else None, "CPU")
 
     try:
         cols = os.get_terminal_size().columns
@@ -286,23 +404,37 @@ def print_dashboard(channels: list[Channel], transcriber_procs: list,
     cols = max(cols, 80)
     line = "─" * cols
 
+    # Badge de inference pool
+    badges = []
+    for iw in inference_workers:
+        alive = iw.process is not None and iw.process.is_alive()
+        ready = bool(iw.ready_event and iw.ready_event.is_set())
+        if alive and ready:
+            c, s_ = ANSI_GREEN, "●"
+        elif alive:
+            c, s_ = ANSI_YELLOW, "○"
+        else:
+            c, s_ = ANSI_RED, "✖"
+        badges.append(f"{c}{s_}{ANSI_RESET}{iw.name}")
+    pool_badge = " ".join(badges)
+
     buf = [ANSI_CLEAR, ANSI_HIDE_CUR]
-    buf.append(f"{ANSI_BOLD}{'TRANSCRIBER MANAGER':^{cols}}{ANSI_RESET}\n")
+    buf.append(f"{ANSI_BOLD}{'TRANSCRIBER MANAGER (pool GPU+CPU / Qwen3-ASR)':^{cols}}{ANSI_RESET}\n")
     buf.append(f"{ANSI_DIM}{line}{ANSI_RESET}\n")
     buf.append(
         f"  {ANSI_BOLD}Modelo:{ANSI_RESET} {TRANSCRIBER_MODEL}"
-        f"   {gpu_badge}  {cpu_badge}"
+        f"   Pool: {pool_badge}"
         f"   {ANSI_BOLD}Uptime:{ANSI_RESET} {h:02d}:{m:02d}:{s:02d}"
         f"   {ANSI_DIM}{now.strftime('%H:%M:%S')}{ANSI_RESET}\n"
     )
     buf.append(f"{ANSI_DIM}{line}{ANSI_RESET}\n")
     buf.append(
         f"  {'#':>2}  {'Canal':<22}  {'Proceso':<8}  {'Heartbeat':>9}  "
-        f"{'Rst':>4}  {'Rst/h':>5}  {'Estabilidad':<14}  {'Último corte'}\n"
+        f"{'Q':>2}  {'Rst':>4}  {'Rst/h':>5}  {'Estabilidad':<14}  {'Último corte'}\n"
     )
     buf.append(f"{ANSI_DIM}{line}{ANSI_RESET}\n")
 
-    uptime_h = max(uptime / 3600, 1 / 60)   # mínimo 1 min para evitar div/0
+    uptime_h = max(uptime / 3600, 1 / 60)
 
     for ch in channels:
         alive  = ch.process is not None and ch.process.is_alive()
@@ -330,7 +462,6 @@ def print_dashboard(channels: list[Channel], transcriber_procs: list,
         else:
             hb_col = f"{ANSI_GREEN}{hb_age:>6}s {ANSI_RESET}"
 
-        # Índice de estabilidad
         rst_h = ch.restarts / uptime_h
         if rst_h == 0:
             stab_color = ANSI_GREEN
@@ -359,9 +490,19 @@ def print_dashboard(channels: list[Channel], transcriber_procs: list,
             lr_str = f"{ANSI_DIM}sin cortes{ANSI_RESET}"
 
         nombre = ch.name[:22]
+
+        # Cola del canal: q=0 (verde), q=1-2 (amarillo), q=3 (rojo saturado)
+        qsz = _safe_qsize(ch.out_queue) if ch.out_queue else 0
+        if qsz == 0:
+            q_col = f"{ANSI_DIM}{qsz:>2}{ANSI_RESET}"
+        elif qsz < CHANNEL_QUEUE_MAXSIZE:
+            q_col = f"{ANSI_YELLOW}{qsz:>2}{ANSI_RESET}"
+        else:
+            q_col = f"{ANSI_RED}{qsz:>2}{ANSI_RESET}"
+
         buf.append(
             f"  {ch.id:>2}  {nombre:<22}  {proc_col}  {hb_col}  "
-            f"{rst_col}  {rst_h_str}  {stab_col}  {lr_str}\n"
+            f"{q_col}  {rst_col}  {rst_h_str}  {stab_col}  {lr_str}\n"
         )
 
     buf.append(f"{ANSI_DIM}{line}{ANSI_RESET}\n")
@@ -392,50 +533,67 @@ def main():
     channels = [Channel(id=i+1, name=ch["name"], url=ch["url"])
                 for i, ch in enumerate(raw)]
 
-    # Cola compartida — GPU y CPU consumen de la misma cola (load balancing automático)
-    audio_queue = Queue(maxsize=64)
+    # Pool de inferencia, cada worker con su propia cola
+    inference_workers = [InferenceWorker(name=n, device=d, threads=t,
+                                         weight=w, maxsize=mx)
+                         for (n, d, t, w, mx) in INFERENCE_POOL]
 
-    transcriber_procs = [None, None]
-    atexit.register(stop_all, channels, transcriber_procs)
+    dispatcher_stop  = threading.Event()
+    dispatcher_thread: Optional[threading.Thread] = None
 
-    # Iniciar transcribers (GPU primero, luego CPU)
-    logger.info(f"Iniciando transcriber GPU ({TRANSCRIBER_MODEL} cuda, {GPU_PARALLEL_WORKERS} workers)...")
-    transcriber_procs[0] = start_transcriber(
-        audio_queue, "cuda", GPU_PARALLEL_WORKERS, 8, "transcriber-gpu")
+    def cleanup():
+        dispatcher_stop.set()
+        stop_all(channels, inference_workers)
 
-    logger.info(f"Iniciando transcriber CPU ({TRANSCRIBER_MODEL} cpu, {CPU_PARALLEL_WORKERS} workers × {CPU_THREADS_PER_WORKER} threads)...")
-    transcriber_procs[1] = start_transcriber(
-        audio_queue, "cpu", CPU_PARALLEL_WORKERS, CPU_THREADS_PER_WORKER, "transcriber-cpu")
+    atexit.register(cleanup)
 
-    logger.info("Esperando ~35s mientras cargan los modelos...")
-    time.sleep(35)
+    # Lanzar inference workers primero (tardan en cargar el modelo)
+    logger.info(f"Iniciando pool de inferencia ({len(inference_workers)} workers)...")
+    for iw in inference_workers:
+        iw.process = start_inference_worker(iw)
 
-    # Iniciar workers con delay escalonado
-    logger.info("Iniciando workers de audio...")
+    # Esperar a que TODOS estén ready (vía mp.Event). Sin timeout fijo.
+    logger.info("Esperando que los modelos carguen en cada worker...")
+    for iw in inference_workers:
+        if not iw.ready_event.wait(timeout=300):
+            logger.error(f"Worker '{iw.name}' no arrancó en 5 min — abortando")
+            cleanup()
+            sys.exit(1)
+        logger.info(f"  ✓ '{iw.name}' listo")
+
+    # Lanzar workers de audio
+    logger.info("Iniciando workers de audio (1 por canal)...")
     for ch in channels:
-        ch.process = start_worker(ch, audio_queue)
-        time.sleep(4)
+        ch.process = start_channel_worker(ch)
+        time.sleep(2)   # leve escalonamiento para evitar flood al servidor de streaming
+
+    # Arrancar dispatcher
+    dispatcher_thread = threading.Thread(
+        target=dispatcher_loop,
+        args=(channels, inference_workers, dispatcher_stop),
+        name="dispatcher",
+        daemon=True,
+    )
+    dispatcher_thread.start()
+    logger.info("Dispatcher en línea — el sistema está operativo")
 
     started_at = datetime.now()
-    logger.info(f"Sistema activo: {len(channels)} canales → {TRANSCRIBER_MODEL} GPU+CPU")
 
     def handle_exit(*_):
         sys.stdout.write(ANSI_SHOW_CUR + "\n")
         sys.stdout.flush()
-        stop_all(channels, transcriber_procs)
+        cleanup()
         os._exit(0)
 
     signal.signal(signal.SIGINT,  handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
-    # Dashboard inicial
-    print_dashboard(channels, transcriber_procs, started_at)
+    print_dashboard(channels, inference_workers, started_at)
 
-    # Loop de supervisión — refresca dashboard cada HEALTH_INTERVAL segundos
     while True:
         time.sleep(HEALTH_INTERVAL)
-        transcriber_procs = health_check(channels, audio_queue, transcriber_procs)
-        print_dashboard(channels, transcriber_procs, started_at)
+        health_check(channels, inference_workers)
+        print_dashboard(channels, inference_workers, started_at)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,28 @@
+[Unit]
+Description=Transcriber TV 24x7 (Qwen3-ASR) - Captura y transcripción de 8 canales
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="HF_HOME=/home/transcriber/transcriber-linux/models"
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python manager.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# El modelo tarda ~45s en cargar + workers con delay escalonado
+TimeoutStartSec=300
+# El shutdown puede requerir liberar la GPU
+TimeoutStopSec=30
+# Protección contra bucles de reinicio
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
