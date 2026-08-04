@@ -55,6 +55,13 @@ EPGSHARE_WANTED = {
     'Imagen':        ['imagen.telev', 'imagen tv', 'imagentv', 'imagen.tv',
                       'xhimt', 'canal imagen', 'imagentv.mx'],
     'ADN 40':        ['adn.40', 'adn40', 'adn 40'],
+    # Canales agregados en la ampliacion a 26 (2026-08-04) que epgshare01 MX1
+    # ya trae pero no estaban mapeados.
+    'Canal 11':      ['11.de.méxico', 'canal 11 de méxico'],
+    'Canal 14':      ['14.de.méxico', 'canal 14 de méxico'],
+    'Canal 22':      ['22.de.méxico', 'canal 22 de méxico'],
+    'TV UNAM':       ['tvunam', 'tv unam'],
+    'Excélsior TV':  ['excelsior'],
 }
 
 # ── Fuente 2: TVHeadend EIT ───────────────────────────────────────────────────
@@ -72,6 +79,9 @@ TVH_CHANNEL_MAP = {
     'n mas':       'N+',
     'canal cinco': 'Canal 5',
     'canal5':      'Canal 5',
+    # epgshare01 no cubre este canal; TVHeadend si trae EIT real (confirmado
+    # 2026-08-04: titulos de programa reales, no placeholder).
+    'a más +':     'A más +',
 }
 
 
@@ -203,12 +213,12 @@ def _fetch_xmltv_url(url: str) -> tuple[int, set[str]]:
         title = re.sub(r'^\[[A-Z]\]\s*', '', title)
 
         try:
-            adb.execute("""
+            cur = adb.execute("""
                 INSERT OR IGNORE INTO epg_programmes
                     (channel_name, start_ts, stop_ts, title, source)
                 VALUES (?, ?, ?, ?, 'epgshare01')
             """, (ch_name, start_ts, stop_ts, title))
-            count += adb.changes
+            count += cur.rowcount
         except Exception:
             pass
 
@@ -330,12 +340,12 @@ def fetch_tvheadend() -> int:
                 title    = ' '.join((ev.get('title') or '').split())
 
                 try:
-                    adb.execute("""
+                    cur = adb.execute("""
                         INSERT OR IGNORE INTO epg_programmes
                             (channel_name, start_ts, stop_ts, title, source)
                         VALUES (?, ?, ?, ?, 'tvheadend')
                     """, (our_name, start_ts, stop_ts, title))
-                    total += adb.changes
+                    total += cur.rowcount
                 except Exception:
                     pass
 
