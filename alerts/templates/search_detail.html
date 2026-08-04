@@ -349,33 +349,34 @@
   </div>
 
   <div style="overflow-x:auto;width:100%">
-    <table class="table mb-0 matches-table" style="width:100%;min-width:1310px;table-layout:fixed">
+    <table class="table mb-0 matches-table" style="width:100%;min-width:1215px;table-layout:fixed">
       <colgroup>
-        <col style="width:155px">  <!-- Fecha/Hora señal (estimada al instante de la palabra) -->
+        <col style="width:60px">   <!-- Video: botón para ver snapshot + clip -->
         <col style="width:95px">   <!-- Canal -->
         <col style="width:194px">  <!-- Programa (EPG) +8 caracteres, wrap a 2 líneas -->
         <col style="width:95px">   <!-- Palabra -->
         <col>                      <!-- Texto transcrito (flexible, recibe el resto) -->
         <col style="width:205px">  <!-- Detectado: cabe "YYYY-MM-DD HH:MM:SS" completo -->
-        <col style="width:60px">   <!-- Video: botón para ver snapshot + clip -->
       </colgroup>
       <thead>
         <tr>
-          <th title="Hora estimada del momento exacto en que se mencionó la palabra (no el inicio del chunk)">Fecha/Hora señal</th>
+          <th>Video</th>
           <th>Canal</th>
           <th>Programa (EPG)</th>
           <th>Palabra</th>
           <th>Texto transcrito (±30 palabras de contexto)</th>
           <th>Detectado</th>
-          <th>Video</th>
         </tr>
       </thead>
       <tbody>
         {% for m in matches %}
         <tr>
-          <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle"
-              title="Inicio del chunk: {{ m.timestamp[:19] if m.timestamp else '—' }}">
-            {{ m.precise_timestamp[:19] if m.precise_timestamp else (m.timestamp[:19] if m.timestamp else '—') }}
+          <td class="text-center" style="vertical-align:middle">
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    title="Ver snapshot y video (±10s)"
+                    onclick="openClip({{ s.id }}, {{ m.id }})">
+              <i class="bi bi-camera-video"></i>
+            </button>
           </td>
           <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle"
               title="{{ m.channel_name }}">
@@ -396,17 +397,10 @@
           <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
             {{ m.found_at[:19] }}
           </td>
-          <td class="text-center" style="vertical-align:middle">
-            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
-                    title="Ver snapshot y video (±10s)"
-                    onclick="openClip({{ s.id }}, {{ m.id }})">
-              <i class="bi bi-camera-video"></i>
-            </button>
-          </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="7" class="text-center py-5" style="color:var(--muted)">
+          <td colspan="6" class="text-center py-5" style="color:var(--muted)">
             <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
             Sin coincidencias{% if kfs or cfs or pfs or date_from or date_to %} con estos filtros{% endif %}
           </td>
@@ -559,11 +553,8 @@
   }
 
   function makeRow(m) {
-    // Usa precise_timestamp (instante exacto de la palabra) y centered_text
-    // (recortado a 30 palabras antes y 30 después). Los provee el backend en
-    // el endpoint /api/searches/.../matches.
-    const ts       = (m.precise_timestamp || m.timestamp || '').slice(0, 19) || '—';
-    const tsTitle  = m.timestamp ? ('Inicio del chunk: ' + m.timestamp.slice(0, 19)) : '';
+    // Usa centered_text (recortado a 30 palabras antes y 30 después). Lo
+    // provee el backend en el endpoint /api/searches/.../matches.
     const fat      = m.found_at  ? m.found_at.slice(0, 19)  : '';
     const rawCent  = esc(m.centered_text || m.matched_text || '');
     const rawFull  = esc(m.matched_text || '');
@@ -572,7 +563,11 @@
       ? rawCent.replace(new RegExp(kwEsc, 'gi'), s => '<mark>' + s + '</mark>')
       : rawCent;
     return `<tr style="animation:fadeIn .4s ease">
-      <td style="white-space:nowrap;color:var(--text2);font-size:.8rem;vertical-align:middle" title="${tsTitle}">${ts}</td>
+      <td class="text-center" style="vertical-align:middle">
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})">
+          <i class="bi bi-camera-video"></i>
+        </button>
+      </td>
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle">${esc(m.channel_name)}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
       <td style="vertical-align:middle;overflow:hidden"><span class="kw" style="white-space:nowrap">${esc(m.keyword)}</span></td>
