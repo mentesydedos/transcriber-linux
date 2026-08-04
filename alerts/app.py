@@ -674,6 +674,49 @@ def create_app() -> Flask:
             prog_map=prog_map,
         )
 
+    def _match_moment(sid, mid):
+        """Devuelve (match_row, datetime del instante exacto de la palabra) o (None, None)."""
+        s = _get_search(sid)
+        if not s:
+            return None, None
+        m = db().execute(
+            "SELECT * FROM matches WHERE id=? AND search_id=?", (mid, sid)
+        ).fetchone()
+        if not m:
+            return None, None
+        md = _enrich_match(m, phonetic=bool(s['phonetic']))
+        try:
+            moment = datetime.fromisoformat(md['precise_timestamp'])
+        except Exception:
+            return m, None
+        return m, moment
+
+    @app.route('/searches/<int:sid>/matches/<int:mid>/snapshot.jpg')
+    @login_required
+    def match_snapshot(sid, mid):
+        from alerts.clips import extract_snapshot, CACHE_DIR
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment:
+            return ('', 404)
+        out = CACHE_DIR / f'{mid}.jpg'
+        if not out.exists():
+            if not extract_snapshot(m['channel_name'] or '', moment, out):
+                return ('', 404)
+        return send_file(out, mimetype='image/jpeg')
+
+    @app.route('/searches/<int:sid>/matches/<int:mid>/clip.mp4')
+    @login_required
+    def match_clip(sid, mid):
+        from alerts.clips import extract_clip, CACHE_DIR
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment:
+            return ('', 404)
+        out = CACHE_DIR / f'{mid}.mp4'
+        if not out.exists():
+            if not extract_clip(m['channel_name'] or '', moment, out):
+                return ('', 404)
+        return send_file(out, mimetype='video/mp4')
+
     @app.route('/searches/<int:sid>/edit', methods=['GET', 'POST'])
     @login_required
     def search_edit(sid):

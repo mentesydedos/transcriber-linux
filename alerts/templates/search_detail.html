@@ -349,7 +349,7 @@
   </div>
 
   <div style="overflow-x:auto;width:100%">
-    <table class="table mb-0 matches-table" style="width:100%;min-width:1250px;table-layout:fixed">
+    <table class="table mb-0 matches-table" style="width:100%;min-width:1310px;table-layout:fixed">
       <colgroup>
         <col style="width:155px">  <!-- Fecha/Hora señal (estimada al instante de la palabra) -->
         <col style="width:95px">   <!-- Canal -->
@@ -357,6 +357,7 @@
         <col style="width:95px">   <!-- Palabra -->
         <col>                      <!-- Texto transcrito (flexible, recibe el resto) -->
         <col style="width:205px">  <!-- Detectado: cabe "YYYY-MM-DD HH:MM:SS" completo -->
+        <col style="width:60px">   <!-- Video: botón para ver snapshot + clip -->
       </colgroup>
       <thead>
         <tr>
@@ -366,6 +367,7 @@
           <th>Palabra</th>
           <th>Texto transcrito (±30 palabras de contexto)</th>
           <th>Detectado</th>
+          <th>Video</th>
         </tr>
       </thead>
       <tbody>
@@ -394,10 +396,17 @@
           <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
             {{ m.found_at[:19] }}
           </td>
+          <td class="text-center" style="vertical-align:middle">
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    title="Ver snapshot y video (±10s)"
+                    onclick="openClip({{ s.id }}, {{ m.id }})">
+              <i class="bi bi-camera-video"></i>
+            </button>
+          </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="6" class="text-center py-5" style="color:var(--muted)">
+          <td colspan="7" class="text-center py-5" style="color:var(--muted)">
             <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
             Sin coincidencias{% if kfs or cfs or pfs or date_from or date_to %} con estos filtros{% endif %}
           </td>
@@ -421,6 +430,28 @@
     </div>
   </div>
   {% endif %}
+</div>
+
+<!-- Modal: snapshot + clip de 20s centrado en la palabra encontrada -->
+<div class="modal fade" id="clipModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title mb-0"><i class="bi bi-camera-video me-2"></i>Snapshot y video (±10s)</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body text-center">
+        <div id="clipLoading" class="py-5" style="color:var(--muted)">
+          <div class="spinner-border spinner-border-sm me-2"></div>Generando snapshot y video…
+        </div>
+        <img id="clipSnapshot" class="img-fluid rounded mb-3 d-none" style="max-height:320px">
+        <video id="clipVideo" class="w-100 rounded d-none" controls preload="none"></video>
+        <div id="clipError" class="text-danger small d-none">
+          No hay grabación de video disponible para este momento/canal.
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 {% block scripts %}
@@ -646,6 +677,41 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
     // Bootstrap añade el caret vía CSS al .dropdown-toggle; el texto ya está actualizado
   });
 });
+
+// Modal de snapshot + clip: carga perezosa, solo al hacer click en la fila.
+(function() {
+  var modalEl  = document.getElementById('clipModal');
+  var modal    = new bootstrap.Modal(modalEl);
+  var loading  = document.getElementById('clipLoading');
+  var imgEl    = document.getElementById('clipSnapshot');
+  var videoEl  = document.getElementById('clipVideo');
+  var errorEl  = document.getElementById('clipError');
+
+  window.openClip = function(searchId, matchId) {
+    loading.classList.remove('d-none');
+    imgEl.classList.add('d-none');
+    videoEl.classList.add('d-none');
+    errorEl.classList.add('d-none');
+    videoEl.pause();
+    videoEl.removeAttribute('src');
+    videoEl.load();
+
+    var base = '/searches/' + searchId + '/matches/' + matchId;
+    imgEl.onload  = function() { loading.classList.add('d-none'); imgEl.classList.remove('d-none'); };
+    imgEl.onerror = function() { loading.classList.add('d-none'); errorEl.classList.remove('d-none'); };
+    imgEl.src = base + '/snapshot.jpg?_=' + Date.now();
+    videoEl.src = base + '/clip.mp4';
+    videoEl.classList.remove('d-none');
+    modal.show();
+  };
+
+  // Al cerrar, detener el video para no seguir consumiendo ancho de banda.
+  modalEl.addEventListener('hidden.bs.modal', function() {
+    videoEl.pause();
+    videoEl.removeAttribute('src');
+    videoEl.load();
+  });
+})();
 </script>
 {% endblock %}
 {% endblock %}

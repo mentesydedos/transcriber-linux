@@ -14,6 +14,9 @@ models/
 # Salida de transcripciones
 output/
 
+# Cache de snapshots/clips de video generados on-demand
+alerts/cache/
+
 # Logs
 logs/
 
