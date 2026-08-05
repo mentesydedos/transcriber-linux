@@ -211,7 +211,7 @@
           <i class="bi bi-tv me-2" style="color:var(--green)"></i>Top canales
         </span>
       </div>
-      <div class="card-body px-4">
+      <div class="card-body px-4" style="max-height:260px;overflow-y:auto">
         {% set max_ch = ch_stats[0].cnt if ch_stats else 1 %}
         {% for ch in ch_stats %}
         <div class="d-flex align-items-center gap-2 mb-2">
@@ -349,28 +349,31 @@
   </div>
 
   <div style="overflow-x:auto;width:100%">
-    <table class="table mb-0 matches-table" style="width:100%;min-width:1215px;table-layout:fixed">
+    <table class="table mb-0 matches-table" style="width:100%;min-width:1255px;table-layout:fixed">
       <colgroup>
+        <col style="width:205px">  <!-- Detectado: cabe "YYYY-MM-DD HH:MM:SS" completo -->
         <col style="width:60px">   <!-- Video: botón para ver snapshot + clip -->
-        <col style="width:95px">   <!-- Canal -->
+        <col style="width:135px">  <!-- Canal -->
         <col style="width:194px">  <!-- Programa (EPG) +8 caracteres, wrap a 2 líneas -->
         <col style="width:95px">   <!-- Palabra -->
         <col>                      <!-- Texto transcrito (flexible, recibe el resto) -->
-        <col style="width:205px">  <!-- Detectado: cabe "YYYY-MM-DD HH:MM:SS" completo -->
       </colgroup>
       <thead>
         <tr>
+          <th>Detectado</th>
           <th>Video</th>
           <th>Canal</th>
           <th>Programa (EPG)</th>
           <th>Palabra</th>
           <th>Texto transcrito (±30 palabras de contexto)</th>
-          <th>Detectado</th>
         </tr>
       </thead>
       <tbody>
         {% for m in matches %}
         <tr>
+          <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
+            {{ m.found_at[:19] }}
+          </td>
           <td class="text-center" style="vertical-align:middle">
             <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
                     title="Ver snapshot y video (±10s)"
@@ -393,9 +396,6 @@
             <div class="mtext mtext-wide" title="{{ m.matched_text }}">
               {{ m.centered_text | highlight(m.keyword, s.phonetic) }}
             </div>
-          </td>
-          <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
-            {{ m.found_at[:19] }}
           </td>
         </tr>
         {% else %}
@@ -563,6 +563,7 @@
       ? rawCent.replace(new RegExp(kwEsc, 'gi'), s => '<mark>' + s + '</mark>')
       : rawCent;
     return `<tr style="animation:fadeIn .4s ease">
+      <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
       <td class="text-center" style="vertical-align:middle">
         <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})">
           <i class="bi bi-camera-video"></i>
@@ -572,7 +573,6 @@
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
       <td style="vertical-align:middle;overflow:hidden"><span class="kw" style="white-space:nowrap">${esc(m.keyword)}</span></td>
       <td style="vertical-align:middle"><div class="mtext mtext-wide" title="${rawFull}">${txt}</div></td>
-      <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
     </tr>`;
   }
 

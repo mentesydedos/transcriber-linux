@@ -624,7 +624,7 @@ def create_app() -> Flask:
             "SELECT keyword, COUNT(*) cnt FROM matches WHERE search_id=? GROUP BY keyword ORDER BY cnt DESC", (sid,)
         ).fetchall()
         ch_stats = d.execute(
-            "SELECT channel_name, COUNT(*) cnt FROM matches WHERE search_id=? GROUP BY channel_name ORDER BY cnt DESC LIMIT 10", (sid,)
+            "SELECT channel_name, COUNT(*) cnt FROM matches WHERE search_id=? GROUP BY channel_name ORDER BY cnt DESC", (sid,)
         ).fetchall()
 
         # Heatmap: una fila por fecha real (date_start … hoy o date_end)
