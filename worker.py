@@ -6,6 +6,7 @@ si los inference workers no dan abasto, el chunk más viejo se descarta en
 vez de bloquear. Esto impide que un canal atrasado congele al sistema.
 """
 
+import os
 import subprocess
 import numpy as np
 import sqlite3
@@ -19,13 +20,24 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SAMPLE_RATE     = 16000
-CHUNK_SECONDS   = 30             # 30s: contexto nativo de Whisper → máxima calidad
+# Largo del chunk, configurable por env. 30s es el contexto nativo de Whisper/Qwen.
+# Parakeet en cambio deriva al inglés en registros formales (noticieros) con chunks
+# cortos aislados; una ventana más larga (60-120s) le da contexto y lo ancla en
+# español. Ver TRANSCRIBER_CHUNK_SEC en el servicio de Parakeet.
+CHUNK_SECONDS   = int(os.environ.get("TRANSCRIBER_CHUNK_SEC", "30"))
 CHUNK_SAMPLES   = SAMPLE_RATE * CHUNK_SECONDS
 OVERLAP_SEC     = 0              # sin overlap: chunks de 30s son suficientemente largos
 OVERLAP_SAMPLES = int(SAMPLE_RATE * OVERLAP_SEC)
 
-DB_PATH = "transcriptions.db"
+# DB configurable por env (para pruebas sin tocar la de producción).
+DB_PATH = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 LOG_DIR = Path("logs")
+
+# CC-first: si llegó un caption en los últimos CC_GRACE_SEC, NO se manda audio a
+# Qwen (el CC ya cubre ese tramo). Ahorra cómputo de ASR en canales con CC.
+CC_GRACE_SEC = float(os.environ.get("TRANSCRIBER_CC_GRACE", "90"))
+# Poner TRANSCRIBER_CC=0 para desactivar la rama de Closed Captions.
+CC_ENABLED = os.environ.get("TRANSCRIBER_CC", "1").lower() not in ("0", "false", "no")
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -67,6 +79,11 @@ def init_db():
     for col, defn in [("heartbeat","TEXT"),("restart_count","INTEGER DEFAULT 0"),("last_error","TEXT")]:
         if col not in existing:
             conn.execute(f"ALTER TABLE channel_status ADD COLUMN {col} {defn}")
+    # Origen de la transcripción: 'asr' (Qwen3) o 'cc' (ccextractor). Default 'asr'
+    # para no romper las 969k filas históricas.
+    tcols = {r[1] for r in conn.execute("PRAGMA table_info(transcriptions)").fetchall()}
+    if "source" not in tcols:
+        conn.execute("ALTER TABLE transcriptions ADD COLUMN source TEXT DEFAULT 'asr'")
     conn.commit()
     conn.close()
 
@@ -114,18 +131,129 @@ def detect_channels(url: str, logger: logging.Logger) -> int:
 
 def start_ffmpeg(url: str, logger: logging.Logger, channels: int = 2) -> subprocess.Popen:
     af_filter = ["-af", "pan=mono|c0=FC"] if channels > 2 else ["-ac", "1"]
+    # La fuente ahora es un MPEG-TS local (sintonizador), con video+audio del
+    # subcanal. Dejamos que ffmpeg detecte el contenedor (sin `-f ac3`),
+    # descartamos el video (-vn) y tomamos el primer audio.
     cmd = [
         "ffmpeg",
         "-reconnect", "1", "-reconnect_streamed", "1",
         "-reconnect_delay_max", "3", "-reconnect_at_eof", "1",
         "-timeout", "8000000",
         "-fflags", "nobuffer", "-flags", "low_delay",
-        "-f", "ac3", "-i", url,
+        "-i", url,
+        "-vn", "-map", "0:a:0",
         "-acodec", "pcm_s16le", "-ar", str(SAMPLE_RATE),
     ] + af_filter + ["-f", "s16le", "pipe:1", "-loglevel", "warning"]
     logger.info(f"FFmpeg iniciado: {url[:60]}... (ch={channels})")
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             bufsize=CHUNK_SAMPLES * 2)
+
+
+# ── Closed Captions (CC-first) ──────────────────────────────────────────────────
+def _tc_to_ms(tc: str) -> int:
+    h, m, rest = tc.strip().split(":")
+    s, ms = rest.split(",")
+    return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms)
+
+
+def _cc_block_duration(tcline: str) -> float:
+    try:
+        a, b = tcline.split(" --> ", 1)
+        return max(0.0, (_tc_to_ms(b) - _tc_to_ms(a)) / 1000.0)
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def cc_extractor_thread(channel_id: int, channel_name: str, url: str,
+                        cc_state: dict, stop_event: threading.Event,
+                        logger: logging.Logger):
+    """Corre ccextractor sobre el TS del subcanal. Cada caption se escribe en la
+    DB con source='cc' y actualiza cc_state['last'] (para que el loop de audio
+    saltee Qwen mientras haya CC). Auto-reinicia si el pipe cae."""
+    # Import diferido (evita ciclo al cargar) del motor activo: cada uno trae su
+    # propia save_to_db/FileWindow, y transcriber.py (Qwen) exige qwen_asr, que
+    # no existe en venv-parakeet/venv-cohere.
+    _engine = os.environ.get("TRANSCRIBER_ENGINE", "qwen").lower()
+    if _engine == "parakeet":
+        from transcriber_parakeet import save_to_db, FileWindow
+    elif _engine == "cohere":
+        from transcriber_cohere import save_to_db, FileWindow
+    else:
+        from transcriber import save_to_db, FileWindow
+    # Perezosa: solo se crea (y escribe su header) si este canal de verdad trae
+    # CC — la mayoría no. Instancia propia de este hilo (proceso del canal); el
+    # inference worker (otro proceso) tiene la suya para el audio. Ambas
+    # escriben al mismo TXT/SRT del bloque; en la práctica no compiten porque
+    # CC-first hace que solo una fuente esté activa a la vez para un mismo
+    # tramo de tiempo.
+    file_window = None
+    last_end_dt = None   # evita que un bloque nuevo empiece antes de que termine el previo
+    while not stop_event.is_set():
+        ff = cc = None
+        try:
+            ff = subprocess.Popen(
+                ["ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
+                 "-reconnect_delay_max", "3", "-reconnect_at_eof", "1",
+                 "-timeout", "8000000", "-i", url,
+                 "-map", "0:v:0", "-c", "copy", "-f", "mpegts", "pipe:1",
+                 "-loglevel", "error"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            cc = subprocess.Popen(
+                ["ccextractor", "-quiet", "-s", "-1",
+                 "-in=ts", "-stdin", "-out=srt", "-stdout",
+                 "--nofontcolor", "--norollup"],
+                stdin=ff.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace")
+            block = []
+            for line in cc.stdout:
+                if stop_event.is_set():
+                    break
+                line = line.rstrip("\r\n")
+                if line == "":
+                    if len(block) >= 3 and " --> " in block[1]:
+                        text = " ".join(t.strip() for t in block[2:] if t.strip())
+                        while "  " in text:
+                            text = text.replace("  ", " ")
+                        if text:
+                            cc_state["last"] = time.time()
+                            dur = _cc_block_duration(block[1])
+                            end_dt = datetime.now()
+                            start_dt = end_dt - timedelta(seconds=dur)
+                            if last_end_dt is not None and start_dt < last_end_dt:
+                                start_dt = min(last_end_dt, end_dt)
+                            last_end_dt = end_dt
+                            now = end_dt.isoformat(sep=" ", timespec="milliseconds")
+                            try:
+                                save_to_db(channel_id, channel_name, text,
+                                           dur, start_ts=now, source="cc")
+                            except Exception as e:
+                                logger.error(f"CC save_to_db: {e}")
+                            try:
+                                if file_window is None:
+                                    file_window = FileWindow(channel_id, channel_name)
+                                file_window.write(
+                                    start_dt.isoformat(sep=" ", timespec="milliseconds"),
+                                    now, text)
+                            except Exception as e:
+                                logger.error(f"CC escribiendo archivo: {e}")
+                    block = []
+                else:
+                    block.append(line)
+        except Exception as e:
+            logger.warning(f"CC extractor error: {e}")
+        finally:
+            for p in (cc, ff):
+                if p and p.poll() is None:
+                    try:
+                        p.terminate()
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try: p.kill()
+                        except Exception: pass
+                    except Exception:
+                        pass
+        if not stop_event.is_set():
+            time.sleep(3)
 
 def ffmpeg_reader(proc: subprocess.Popen, audio_q: queue.Queue,
                   stop_event: threading.Event, logger: logging.Logger):
@@ -162,6 +290,18 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
     hb_stop   = threading.Event()
     hb_thread = threading.Thread(target=send_heartbeat, args=(channel_id, hb_stop), daemon=True)
     hb_thread.start()
+
+    # CC-first: hilo que extrae Closed Captions del subcanal. Mientras haya CC
+    # reciente, el loop de audio no manda chunks a Qwen (ahorra ASR).
+    cc_state = {"last": 0.0}
+    cc_stop = threading.Event()
+    if CC_ENABLED:
+        cc_thread = threading.Thread(
+            target=cc_extractor_thread,
+            args=(channel_id, channel_name, url, cc_state, cc_stop, logger),
+            daemon=True)
+        cc_thread.start()
+        logger.info("CC-first activo (grace=%.0fs)", CC_GRACE_SEC)
 
     audio_channels = detect_channels(url, logger)
     previous_audio = np.zeros(OVERLAP_SAMPLES, dtype=np.float32)
@@ -208,6 +348,11 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
                     sep=" ", timespec="milliseconds")
                 end_ts_s = end_ts.isoformat(sep=" ", timespec="milliseconds")
 
+                # CC-first: si hubo Closed Captions hace poco, ese tramo ya quedó
+                # transcripto vía ccextractor → no gastamos Qwen en este chunk.
+                if CC_ENABLED and (time.time() - cc_state["last"]) < CC_GRACE_SEC:
+                    continue
+
                 item = {
                     "channel_id":   channel_id,
                     "channel_name": channel_name,
@@ -237,9 +382,19 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
         finally:
             stop_event.set()
             proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("ffmpeg no respondió a terminate() en 5s — kill()")
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    logger.error("ffmpeg no murió ni con kill() — posible zombie")
             reader.join(timeout=3)
 
     hb_stop.set()
+    cc_stop.set()
     logger.info("Worker terminado")
 
 

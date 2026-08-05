@@ -32,7 +32,7 @@ BATCH_WAIT_MS     = 150              # esperar 150ms para agrupar chunks antes d
 MAX_NEW_TOKENS    = 128              # 128 basta para ~30s de habla densa; 256 ralentiza 20-30% sin mejorar output
 
 FILE_WINDOW_MIN   = 30
-DB_PATH           = "transcriptions.db"
+DB_PATH           = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 ALERTS_DB         = Path("alerts.db")
 OUTPUT_DIR        = Path("output")
 LOG_DIR           = Path("logs")
@@ -63,10 +63,12 @@ def setup_logger(worker_name: str = "transcriber") -> logging.Logger:
 _db_lock = threading.Lock()
 
 def save_to_db(channel_id: int, channel_name: str, text: str,
-               duration: float, start_ts: str = None) -> str:
+               duration: float, start_ts: str = None, source: str = "asr") -> str:
     """Guarda la transcripción en DB.
     start_ts: ISO de CUANDO se transmitió el audio (no cuando se inferió).
               Si es None, usa now() como fallback (modo legado).
+    source: 'asr' (Qwen3) o 'cc' (ccextractor). Mismo destino/FTS → RAG, búsqueda
+            y alertas lo consumen igual.
     """
     if start_ts:
         # Parseamos para obtener unix_ts consistente con el timestamp textual
@@ -85,9 +87,9 @@ def save_to_db(channel_id: int, channel_name: str, text: str,
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.execute(
                 """INSERT INTO transcriptions
-                   (channel_id, channel_name, timestamp, unix_ts, text, confidence, duration_sec)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (channel_id, channel_name, ts, unix_ts, text, None, duration))
+                   (channel_id, channel_name, timestamp, unix_ts, text, confidence, duration_sec, source)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (channel_id, channel_name, ts, unix_ts, text, None, duration, source))
             rowid = cursor.lastrowid
             conn.execute(
                 "INSERT INTO transcriptions_fts(rowid, text, channel_name) VALUES (?,?,?)",
@@ -161,15 +163,20 @@ class FileWindow:
         self.srt_idx      = 0
         folder = OUTPUT_DIR / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
         folder.mkdir(parents=True, exist_ok=True)
-        self.fh_txt = open(folder / f"{self.base}.txt", "a", encoding="utf-8")
+        txt_path = folder / f"{self.base}.txt"
+        # Solo escribir el header si el archivo es nuevo: evita duplicarlo cuando
+        # el proceso se reinicia a mitad de un bloque (otro FileWindow ya lo escribió).
+        is_new = not txt_path.exists() or txt_path.stat().st_size == 0
+        self.fh_txt = open(txt_path, "a", encoding="utf-8")
         self.fh_srt = open(folder / f"{self.base}.srt", "a", encoding="utf-8")
-        ts_str    = now.strftime('%Y-%m-%d %H:%M:%S')
-        programme = _get_epg_programme(self.channel_name, ts_str)
-        header    = f"[EPG] {programme}" if programme else "[EPG] sin datos"
-        self.fh_txt.write(f"# {header}\n"
-                          f"# Bloque: {start.isoformat(sep=' ')} → {end.isoformat(sep=' ')}\n"
-                          f"# Formato: [start → end] texto\n")
-        self.fh_txt.flush()
+        if is_new:
+            ts_str    = now.strftime('%Y-%m-%d %H:%M:%S')
+            programme = _get_epg_programme(self.channel_name, ts_str)
+            header    = f"[EPG] {programme}" if programme else "[EPG] sin datos"
+            self.fh_txt.write(f"# {header}\n"
+                              f"# Bloque: {start.isoformat(sep=' ')} → {end.isoformat(sep=' ')}\n"
+                              f"# Formato: [start → end] texto\n")
+            self.fh_txt.flush()
 
     def write(self, start_ts: str, end_ts: str, text: str):
         """start_ts/end_ts: ISO con milisegundos (tiempo real del audio)."""

@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}Monitor de señales — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="page-title">Monitor de señales</div>
+    <div style="font-size:.82rem;color:var(--text2)">
+      {{ channels|length }} canales · actualiza cada ~6s · leído de las grabaciones locales, sin tocar TVHeadend
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  {% for c in channels %}
+  <div class="col-6 col-md-4 col-xl-3 col-xxl-2">
+    <div class="card h-100">
+      <div style="position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px 12px 0 0;overflow:hidden">
+        <img data-src="/videowall/thumb/{{ c.num }}.jpg"
+             data-num="{{ c.num }}"
+             style="width:100%;height:100%;object-fit:cover;display:block"
+             onerror="this.closest('.card').querySelector('.vw-noSignal').style.display='flex'; this.style.display='none';"
+             onload="this.style.display='block'; this.closest('.card').querySelector('.vw-noSignal').style.display='none';">
+        <div class="vw-noSignal" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;color:var(--muted);font-size:.75rem">
+          <i class="bi bi-camera-video-off mb-1" style="font-size:1.4rem"></i>
+          sin señal
+        </div>
+      </div>
+      <div class="card-body py-2 px-2">
+        <div style="font-size:.78rem;font-weight:600;color:var(--green);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+             title="{{ c.label }}">
+          {{ c.label }}
+        </div>
+        <div style="font-size:.68rem;color:var(--muted)">canal_{{ '%02d'|format(c.num) }}</div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12">
+    <p style="color:var(--muted)">No hay canales grabándose en output_video/.</p>
+  </div>
+  {% endfor %}
+</div>
+
+{% block scripts %}
+<script>
+(function() {
+  const REFRESH = 6000;
+  const tiles = document.querySelectorAll('img[data-src]');
+  tiles.forEach((img, i) => {
+    const tick = () => { img.src = img.dataset.src + '?_=' + Date.now(); };
+    setTimeout(() => {
+      tick();
+      setInterval(tick, REFRESH);
+    }, i * (REFRESH / Math.max(tiles.length, 1)));
+  });
+})();
+</script>
+{% endblock %}
+{% endblock %}

@@ -34,7 +34,18 @@ from typing import Optional
 from multiprocessing import Process, Queue, Event as MPEvent
 
 import worker
-import transcriber as transcriber_mod
+
+# Motor de inferencia seleccionable por env: 'qwen' (default, transcriber.py) o
+# 'parakeet' (transcriber_parakeet.py, requiere venv-parakeet). Import perezoso:
+# importar el módulo del motor no usado fallaría porque sus dependencias
+# (qwen_asr vs nemo) no coexisten en el mismo venv.
+TRANSCRIBER_ENGINE = os.environ.get("TRANSCRIBER_ENGINE", "qwen").lower()
+if TRANSCRIBER_ENGINE == "parakeet":
+    import transcriber_parakeet as transcriber_mod
+elif TRANSCRIBER_ENGINE == "cohere":
+    import transcriber_cohere as transcriber_mod
+else:
+    import transcriber as transcriber_mod
 
 # Forzar UTF-8
 if sys.stdout.encoding != 'utf-8':
@@ -43,38 +54,68 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # ── Config ────────────────────────────────────────────────────────────────────
-M3U_FILE          = "TV audio.m3u"
-MAX_CHANNELS      = 8
+# Fuente configurable por env: el cutover a la tarjeta local apunta a local.m3u
+# (servido por el sintonizador). Rollback rápido: volver a "TV audio.m3u".
+M3U_FILE          = os.environ.get("TRANSCRIBER_M3U", "TV audio.m3u")
+MAX_CHANNELS      = int(os.environ.get("TRANSCRIBER_MAX_CHANNELS", "8"))
 SKIP_CHANNELS     = set()
 
-TRANSCRIBER_MODEL = "Qwen/Qwen3-ASR-0.6B"
+TRANSCRIBER_MODEL = ("nvidia/parakeet-tdt-0.6b-v3" if TRANSCRIBER_ENGINE == "parakeet"
+                     else "CohereLabs/cohere-transcribe-03-2026" if TRANSCRIBER_ENGINE == "cohere"
+                     else "Qwen/Qwen3-ASR-0.6B")
+
+# Split de motores por canal: dos instancias de manager.py (una por venv/engine)
+# pueden correr a la vez sobre el mismo M3U, cada una cubriendo un subconjunto de
+# canales por NOMBRE. Pensado para el híbrido Cohere (noticias, fuerza idioma) +
+# Parakeet (resto, mucho más rápido) — ver transcriber-integracion-parakeet.
+def _parse_name_list(raw: str) -> set:
+    return {n.strip() for n in raw.split(",") if n.strip()}
+
+ONLY_CHANNELS = _parse_name_list(os.environ.get("TRANSCRIBER_ONLY_CHANNELS", ""))
+SKIP_CHANNEL_NAMES = _parse_name_list(os.environ.get("TRANSCRIBER_SKIP_CHANNEL_NAMES", ""))
 
 # Pool de inference workers. Cada entrada: (name, device, threads, weight, queue_maxsize)
 #   weight = cuántos chunks se le asignan por ronda (round-robin ponderado).
 #   Relación weights aproximada a la capacidad relativa medida en prod:
 #     GPU ~5.3× rt, CPU ~1.9× rt → ratio ~2.8:1, redondeado a 2:1 para dejar
 #     al CPU llevar un poco más de carga y bajar utilización del GPU.
-INFERENCE_POOL = [
-    # (name,   device, threads, weight, maxsize)
+if TRANSCRIBER_ENGINE == "parakeet":
+    # Parakeet-TDT-0.6B ~51× rt en la T1000 → 1 solo worker GPU basta para los
+    # 8 canales con enorme margen. NeMo en CPU sería lento y complejo: no se usa.
+    INFERENCE_POOL = [
+        # (name, device, threads, weight, maxsize)
+        ("gpu", "cuda", None, 1, 12),
+    ]
+elif TRANSCRIBER_ENGINE == "cohere":
+    # Cohere Transcribe ~15× rt medido en A/B (T1000, más lento que Parakeet por
+    # ser AED 2B vs RNNT 0.6B) — pensado para servir solo 2-3 canales de noticias
+    # (ver TRANSCRIBER_ONLY_CHANNELS), así que 1 worker GPU sobra igual. CPU
+    # inviable: un AED de 2B en CPU sería demasiado lento para tiempo real.
+    INFERENCE_POOL = [
+        ("gpu", "cuda", None, 1, 12),
+    ]
+else:
     # Config óptima medida para Qwen-0.6B en este hardware (T1000 + i9-14900):
     # 1 GPU + 1 CPU con 16 hilos → 15.9× rt, 0 drops. Agregar un 2° CPU no ayuda
     # porque la contención de hilos entre workers reduce el throughput total
     # (probado: 3 workers = 5.65× rt, peor que 2). La GPU al 98-100% es
     # esperado y correcto a este throughput.
-    ("gpu",    "cuda", None,    2,      12),
-    ("cpu-1",  "cpu",  16,      1,      6),
-]
+    INFERENCE_POOL = [
+        ("gpu",    "cuda", None,    2,      12),
+        ("cpu-1",  "cpu",  16,      1,      6),
+    ]
 
 CHANNEL_QUEUE_MAXSIZE = 3          # drop-oldest por canal (3 × 30s = 90s buffer)
 DISPATCHER_POLL_MS    = 50         # granularidad del dispatcher
 
 HEALTH_INTERVAL   = 30
 HEARTBEAT_LIMIT   = 180
-DB_PATH           = "transcriptions.db"
+DB_PATH           = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 
 LOG_DIR           = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
-STATUS_FILE       = LOG_DIR / "status.json"
+STATUS_SUFFIX     = f"-{TRANSCRIBER_ENGINE}" if TRANSCRIBER_ENGINE == "cohere" else ""
+STATUS_FILE       = LOG_DIR / f"status{STATUS_SUFFIX}.json"
 FAILURES_LOG      = LOG_DIR / "failures.log"
 
 logging.basicConfig(
@@ -526,12 +567,22 @@ def main():
         logger.error("El M3U no contiene canales válidos.")
         sys.exit(1)
 
-    raw = [ch for i, ch in enumerate(raw[:MAX_CHANNELS], start=1)
-           if i not in SKIP_CHANNELS]
-    logger.info(f"Canales activos: {len(raw)} (omitidos: {sorted(SKIP_CHANNELS)})")
-
-    channels = [Channel(id=i+1, name=ch["name"], url=ch["url"])
-                for i, ch in enumerate(raw)]
+    # El id de canal es su posición en el M3U completo (1-based), NO la posición
+    # tras filtrar — así dos instancias de manager.py (split por motor) asignan
+    # el MISMO channel_id al mismo canal y no chocan en BD/archivos.
+    channels = []
+    for i, ch in enumerate(raw[:MAX_CHANNELS], start=1):
+        if i in SKIP_CHANNELS:
+            continue
+        name = ch["name"]
+        if ONLY_CHANNELS and name not in ONLY_CHANNELS:
+            continue
+        if SKIP_CHANNEL_NAMES and name in SKIP_CHANNEL_NAMES:
+            continue
+        channels.append(Channel(id=i, name=name, url=ch["url"]))
+    logger.info(f"Canales activos: {len(channels)} de {len(raw[:MAX_CHANNELS])} "
+                f"(omitidos por índice: {sorted(SKIP_CHANNELS)}, "
+                f"only={sorted(ONLY_CHANNELS) or '—'}, skip_names={sorted(SKIP_CHANNEL_NAMES) or '—'})")
 
     # Pool de inferencia, cada worker con su propia cola
     inference_workers = [InferenceWorker(name=n, device=d, threads=t,

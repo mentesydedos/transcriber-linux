@@ -1,0 +1,40 @@
+[Unit]
+Description=Transcriber TV 24x7 (Cohere Transcribe) - Canales de noticias con idioma forzado
+After=network-online.target
+Wants=network-online.target
+# No correr junto con el servicio Qwen (motor completo, 8 canales): duplicaria trabajo.
+# SI puede correr junto con transcriber-parakeet.service: cada uno cubre canales distintos.
+Conflicts=transcriber.service
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv-cohere/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="HF_HOME=/home/transcriber/transcriber-linux/models"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+Environment="TRANSCRIBER_ENGINE=cohere"
+Environment="TRANSCRIBER_M3U=TV audio.m3u"
+# M3U ampliado a 26 canales (ver transcriber-parakeet.service); TRANSCRIBER_ONLY_CHANNELS
+# abajo sigue acotando este servicio a las mismas 3 noticias de siempre.
+Environment="TRANSCRIBER_MAX_CHANNELS=30"
+Environment="TRANSCRIBER_CHUNK_SEC=30"
+# Cohere fuerza idioma=es → 0% code-switching medido en el A/B, a diferencia de
+# Parakeet en estos mismos canales (24-43% EN, ver transcriber-integracion-parakeet).
+# Ajustar esta lista si cambia qué canales derivan al inglés.
+Environment="TRANSCRIBER_ONLY_CHANNELS=ADN 40,N+,Canal 4"
+ExecStart=/home/transcriber/transcriber-linux/venv-cohere/bin/python manager.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# Cohere (2B, AED) tarda más en cargar que Parakeet
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

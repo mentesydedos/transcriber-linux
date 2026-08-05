@@ -5,14 +5,23 @@
 
 # Entorno virtual
 venv/
+venv-cohere/
+venv-parakeet/
 env/
 .env
 
 # Modelos descargados (pesados)
 models/
 
-# Salida de transcripciones
+# Salida de transcripciones / grabaciones (pesadas)
 output/
+output_video/
+output_cohere/
+output_parakeet/
+
+# Backups y M3U de pruebas locales
+*.m3u.bak-*
+local.m3u
 
 # Cache de snapshots/clips de video generados on-demand
 alerts/cache/

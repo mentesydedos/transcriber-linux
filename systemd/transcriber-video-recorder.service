@@ -1,0 +1,53 @@
+[Unit]
+Description=Transcriber TV 24x7 - Grabacion de video en bloques de 30 min (26 de 26 canales -- prueba tras eliminar otra maquina y fuga de procesos en TVHeadend)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Fuente TVHeadend, misma que usa el audio.
+Environment="TRANSCRIBER_M3U=TV audio.m3u"
+# Stream CRUDO (profile=pass), sin transcodificar en TVHeadend: su CPU no
+# soporta transcodificacion concurrente confiable (incidente 2026-08-04, se
+# tumbo con solo 4 canales). La compresion H.264 se hace AQUI via NVENC
+# (RTX 4070), que tiene margen de sobra.
+# Historial del limite de canales (2026-08-05):
+# 1. Se penso que era ancho de banda (crudo ~4.5Mbps/canal + ~10.6Mbps audio
+#    saturando el enlace de 100Mb/s) -- ~80,000 corrupt/min con 19 canales.
+# 2. Cable Cat6 instalado (iperf3: ~934Mbps reales) -- NO resolvio, 19 canales
+#    seguian dando ~23,150 errores/min. El ancho de banda no era la causa
+#    principal.
+# 3. Se encontraron dos causas reales de concurrencia en TVHeadend:
+#    a) Otra computadora (148.201.38.134) todavia conectada como grabador
+#       viejo, redundante -- se desconecto su cable.
+#    b) Fuga de procesos en worker.py: proc.terminate() sin proc.wait()/kill()
+#       de respaldo dejaba ffmpegs zombie acumulandose indefinidamente (84
+#       zombies de Cohere/ADN 40 solos, corriendo desde el dia anterior).
+#       Corregido en worker.py (run_worker y cc_extractor_thread) + reinicio
+#       de transcriber-cohere.service y transcriber-parakeet.service.
+# Con ambas causas resueltas, procesos ffmpeg hacia TVHeadend bajaron de 129 a
+# 18. Se sube a los 26 canales completos para probar si esto ya alcanza.
+Environment="TRANSCRIBER_VIDEO_MAX_CHANNELS=26"
+Environment="TRANSCRIBER_VIDEO_BITRATE=1500k"
+Environment="TRANSCRIBER_VIDEO_MAXRATE=1800k"
+Environment="TRANSCRIBER_VIDEO_HEIGHT=480"
+# Salida: local por ahora (796GB libres). Cambiar a la ruta del NAS cuando este montado,
+# ej. /mnt/nas/transcriber-video, y subir/quitar la retencion en cleanup_video.sh.
+Environment="TRANSCRIBER_VIDEO_DIR=/home/transcriber/transcriber-linux/output_video"
+Environment="TRANSCRIBER_VIDEO_SEGMENT_SEC=1800"
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/video_recorder.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

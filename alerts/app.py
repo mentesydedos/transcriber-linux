@@ -750,6 +750,29 @@ def create_app() -> Flask:
                 return ('', 404)
         return send_file(out, mimetype='video/mp4')
 
+    # ══════════════════════════════════════════════════════════════
+    # MONITOR DE SEÑALES (mosaico en vivo)
+    # ══════════════════════════════════════════════════════════════
+    @app.route('/videowall')
+    @login_required
+    def videowall():
+        from alerts.videowall import list_channels
+        return render_template('videowall.html', channels=list_channels())
+
+    @app.route('/videowall/thumb/<int:num>.jpg')
+    @login_required
+    def videowall_thumb(num):
+        from alerts.videowall import list_channels, get_thumbnail
+        ch = next((c for c in list_channels() if c['num'] == num), None)
+        if ch is None:
+            return ('', 404)
+        out = get_thumbnail(num, ch['folder'])
+        if out is None:
+            return ('', 404)
+        resp = send_file(out, mimetype='image/jpeg')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
     @app.route('/searches/<int:sid>/edit', methods=['GET', 'POST'])
     @login_required
     def search_edit(sid):

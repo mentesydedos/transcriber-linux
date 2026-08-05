@@ -2,7 +2,7 @@
 #EXTINF:-1 tvg-id="000533bd87238bce76e6989466084c2d" tvg-chno="1.1",Azteca Uno
 http://poncho:1234@148.201.38.136:9981/stream/channelid/1026753792?profile=audio-aac
 #EXTINF:-1 tvg-id="b692ea424d97438c66a04ff808d8616c" tvg-chno="1.2",ADN 40
-http://poncho:1234@148.201.38.136:9981/stream/channelid/1122669238?profile=audio-aac
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1122669238?profile=pass
 #EXTINF:-1 tvg-id="b46c1f2710628ac505fc720119cb03d0" tvg-chno="2.1",Las Estrellas
 http://poncho:1234@148.201.38.136:9981/stream/channelid/656370868?profile=audio-aac
 #EXTINF:-1 tvg-id="779c5d4194d7418e34762a4b78ab406e" tvg-chno="2.2",N+
@@ -15,3 +15,39 @@ http://poncho:1234@148.201.38.136:9981/stream/channelid/1235314821?profile=audio
 http://poncho:1234@148.201.38.136:9981/stream/channelid/1605723349?profile=audio-aac
 #EXTINF:-1 tvg-id="5b255f8db4be9fec44784022cbafb59f" tvg-chno="7.1",Azteca 7
 http://poncho:1234@148.201.38.136:9981/stream/channelid/224339291?profile=audio-aac
+#EXTINF:-1 tvg-id="71d8562fa3333906249ae601fb5632b8" tvg-chno="3.4",Excélsior TV
+http://poncho:1234@148.201.38.136:9981/stream/channelid/794220657?profile=audio-aac
+#EXTINF:-1 tvg-id="2ed2bcdf7524598ecfab57eadd941e35" tvg-chno="4.2",V +
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1606210094?profile=audio-aac
+#EXTINF:-1 tvg-id="4e6610df934c80f86ec4ea49db88f27f" tvg-chno="7.2",A más +
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1594910286?profile=audio-aac
+#EXTINF:-1 tvg-id="7dbeb7c790752f4bc3dd7dbde972ffc4" tvg-chno="10.1",Quiero TV
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1203224189?profile=audio-aac
+#EXTINF:-1 tvg-id="4aa0b5a10279ac12aebb2f9f26e7debe" tvg-chno="10.2",Quiero TV Musica
+http://poncho:1234@148.201.38.136:9981/stream/channelid/565551178?profile=audio-aac
+#EXTINF:-1 tvg-id="a6656c808d63cf4f5a0bd46891135f9e" tvg-chno="10.3",Quiero TV (-2 horas)
+http://poncho:1234@148.201.38.136:9981/stream/channelid/7103910?profile=audio-aac
+#EXTINF:-1 tvg-id="d9a0eb4d4f32f8162c42b7dc616b1b58" tvg-chno="11.1",Canal 11
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1307287769?profile=audio-aac
+#EXTINF:-1 tvg-id="9112703b55055c35ef16e937db8aa000" tvg-chno="11.2",Canal 11 Niños
+http://poncho:1234@148.201.38.136:9981/stream/channelid/997200529?profile=audio-aac
+#EXTINF:-1 tvg-id="dabe722aae36b522701dea13e311fc34" tvg-chno="14.1",Canal 14
+http://poncho:1234@148.201.38.136:9981/stream/channelid/712163034?profile=audio-aac
+#EXTINF:-1 tvg-id="e79b063b0c5d488f1db1c67d83f95cb8" tvg-chno="14.2",TV MIGRANTE
+http://poncho:1234@148.201.38.136:9981/stream/channelid/990288871?profile=audio-aac
+#EXTINF:-1 tvg-id="8568cfc39ae8b0eb0e52decc0578249e" tvg-chno="17.1",JALISCOTV HD
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1137666181?profile=audio-aac
+#EXTINF:-1 tvg-id="d99300907a3de0ae4e183a0f6bf2d721" tvg-chno="17.2",JaliscoTV
+http://poncho:1234@148.201.38.136:9981/stream/channelid/268473305?profile=audio-aac
+#EXTINF:-1 tvg-id="257daad87bb66a03a4e358162bd041dd" tvg-chno="17.3",JaliscoTV Parlamento
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1487568165?profile=audio-aac
+#EXTINF:-1 tvg-id="819e47938f4c84429ce4f4bc1a550144" tvg-chno="17.4",Judicial TV
+http://poncho:1234@148.201.38.136:9981/stream/channelid/323460737?profile=audio-aac
+#EXTINF:-1 tvg-id="15ee24ea74ff0af5e4c93c45ab9eee72" tvg-chno="20.1",TV UNAM
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1780805141?profile=audio-aac
+#EXTINF:-1 tvg-id="0106016562b8ab2fc1284cda7c2ea59c" tvg-chno="22.1",Canal 22
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1694565889?profile=audio-aac
+#EXTINF:-1 tvg-id="67e8ff9bdb999c0cea05844e34b67e73" tvg-chno="44.1",UDG
+http://poncho:1234@148.201.38.136:9981/stream/channelid/469756007?profile=audio-aac
+#EXTINF:-1 tvg-id="218112c17da0ec72daf4821a11fb6e18" tvg-chno="44.2",Canal 44
+http://poncho:1234@148.201.38.136:9981/stream/channelid/1091731745?profile=audio-aac

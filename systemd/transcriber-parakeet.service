@@ -1,0 +1,45 @@
+[Unit]
+Description=Transcriber TV 24x7 (Parakeet-TDT) - Captura y transcripcion de 23 canales (26 menos los 3 de Cohere)
+After=network-online.target
+Wants=network-online.target
+# No correr junto con el servicio Qwen: comparten GPU y la misma base de datos.
+# SI puede correr junto con transcriber-cohere.service: canales distintos (ver
+# TRANSCRIBER_SKIP_CHANNEL_NAMES abajo).
+Conflicts=transcriber.service
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv-parakeet/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="HF_HOME=/home/transcriber/transcriber-linux/models"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+# Motor Parakeet (transcriber_parakeet.py) en vez de Qwen
+Environment="TRANSCRIBER_ENGINE=parakeet"
+# Batch de inferencia GPU. Subido de 4 a 8 tras el cambio T1000 8GB -> RTX 4070 12GB.
+Environment="TRANSCRIBER_PARAKEET_BATCH=8"
+# Fuente TVHeadend (misma que usaba Qwen). Cambiar a local.m3u tras el cutover.
+Environment="TRANSCRIBER_M3U=TV audio.m3u"
+# M3U ampliado a 26 canales (todo TVHeadend salvo Maussan Televisión, 2026-08-04).
+# Default de manager.py es 8: sin esto trunca la lista a los primeros 8.
+Environment="TRANSCRIBER_MAX_CHANNELS=30"
+# Largo de chunk. 30s es lo maximo confiable con este stream (se corta ~cada 60s).
+# Subir requiere primero estabilizar el stream. Ver TRANSCRIBER_CHUNK_SEC en worker.py.
+Environment="TRANSCRIBER_CHUNK_SEC=30"
+# Estos 3 los cubre transcriber-cohere.service (fuerza idioma, sin code-switching).
+Environment="TRANSCRIBER_SKIP_CHANNEL_NAMES=ADN 40,N+,Canal 4"
+ExecStart=/home/transcriber/transcriber-linux/venv-parakeet/bin/python manager.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# Parakeet tarda ~15s en cargar
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
