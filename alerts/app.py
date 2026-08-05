@@ -41,27 +41,49 @@ def _phonetic(s: str) -> str:
 
 CHUNK_SECONDS = 30   # debe coincidir con worker.py / transcriber.py
 
-def _locate_keyword(text, keyword, phonetic=False):
+def _locate_keyword(text, keyword, phonetic=False, whole_word=False):
     """Encuentra el índice (basado en palabras) de la primera ocurrencia
-    de la keyword. Devuelve (idx_word, total_words) o (None, total_words).
-    Usa la misma lógica de match que _highlight (acento-insensitive y
-    opcionalmente fonético)."""
+    de la keyword (o frase de varias palabras). Devuelve (idx_word, total_words)
+    o (None, total_words). Usa la misma lógica de match que _highlight
+    (acento-insensitive y opcionalmente fonético).
+
+    En modo whole_word, un token solo cuenta si la keyword aparece delimitada
+    por separadores de palabra dentro de él (ej. "día" no debe casar con
+    "diálogo") — se comprueba con límites \\w sobre el token normalizado, no
+    con una lista fija de signos de puntuación, para cubrir cualquier
+    puntuación pegada (paréntesis, comillas, etc.)."""
     if not text or not keyword:
         return None, 0
     words = text.split()
     n = len(words)
     if n == 0:
         return None, 0
-    if phonetic:
-        ph_kw = _phonetic(keyword)
+    norm     = _phonetic if phonetic else _strip_acc
+    kw_words = [norm(w) for w in keyword.split()]
+    k = len(kw_words)
+    if k == 0:
+        return None, n
+
+    if k == 1:
+        kw_n    = kw_words[0]
+        pattern = re.compile(r'(?<!\w)' + re.escape(kw_n) + r'(?!\w)') if whole_word else None
         for i, w in enumerate(words):
-            if ph_kw in _phonetic(w):
+            w_n = norm(w)
+            if whole_word:
+                if pattern.search(w_n):
+                    return i, n
+            elif kw_n in w_n:
                 return i, n
-    else:
-        kw_n = _strip_acc(keyword)
-        for i, w in enumerate(words):
-            if kw_n in _strip_acc(w):
+        return None, n
+
+    # Frase de varias palabras: buscar la secuencia consecutiva de tokens.
+    for i in range(n - k + 1):
+        window = [norm(words[i + j]) for j in range(k)]
+        if whole_word:
+            if window == kw_words:
                 return i, n
+        elif all(kw_words[j] in window[j] for j in range(k)):
+            return i, n
     return None, n
 
 def _center_text(text, idx_word, words_each_side=30):
@@ -100,32 +122,38 @@ def _precise_timestamp(start_ts, idx_word, total_words, chunk_sec=CHUNK_SECONDS)
     except Exception:
         return start_ts
 
-def _enrich_match(m, phonetic=False):
+def _enrich_match(m, phonetic=False, whole_word=False):
     """Convierte una Row a dict y agrega: precise_timestamp y centered_text.
     `m` puede ser sqlite3.Row o dict."""
     md = dict(m)
     text = md.get('matched_text') or ''
     kw   = md.get('keyword') or ''
-    idx, total = _locate_keyword(text, kw, phonetic=phonetic)
+    idx, total = _locate_keyword(text, kw, phonetic=phonetic, whole_word=whole_word)
     md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx, total)
     md['centered_text']     = _center_text(text, idx, words_each_side=30)
     return md
 
-def _highlight(text, keyword, phonetic=False):
+def _highlight(text, keyword, phonetic=False, whole_word=False):
     """Resalta todas las ocurrencias de keyword en text con <mark>.
     Usa comparación sin acentos/mayúsculas; en modo fonético detecta
-    palabras fonéticamente equivalentes aunque se escriban diferente."""
+    palabras fonéticamente equivalentes aunque se escriban diferente.
+    En modo whole_word exige límites de palabra (\\w) alrededor de la
+    keyword, para no resaltar "día" dentro de "diálogo"."""
     if not text or not keyword:
         return Markup(html_escape(text or ''))
     text, keyword = str(text), str(keyword)
     if phonetic:
-        ph_kw = _phonetic(keyword)
+        ph_kw   = _phonetic(keyword)
+        pattern = re.compile(r'(?<!\w)' + re.escape(ph_kw) + r'(?!\w)') if whole_word else None
         parts = re.split(r'(\s+)', text)
         out = []
         for p in parts:
             if not p.strip():
                 out.append(str(html_escape(p)))
-            elif ph_kw in _phonetic(p):
+                continue
+            p_ph    = _phonetic(p)
+            matched = bool(pattern.search(p_ph)) if whole_word else (ph_kw in p_ph)
+            if matched:
                 out.append(f'<mark>{html_escape(p)}</mark>')
             else:
                 out.append(str(html_escape(p)))
@@ -133,7 +161,8 @@ def _highlight(text, keyword, phonetic=False):
     # Búsqueda exacta sin acentos/mayúsculas: regex case-insensitive sobre texto escapeado
     esc_text = str(html_escape(text))
     esc_kw   = re.escape(str(html_escape(keyword)))
-    result   = re.sub(esc_kw, lambda m: f'<mark>{m.group()}</mark>',
+    pattern  = (r'(?<!\w)' if whole_word else '') + esc_kw + (r'(?!\w)' if whole_word else '')
+    result   = re.sub(pattern, lambda m: f'<mark>{m.group()}</mark>',
                       esc_text, flags=re.IGNORECASE)
     return Markup(result)
 
@@ -155,6 +184,7 @@ CREATE TABLE IF NOT EXISTS searches (
     name              TEXT    NOT NULL,
     keywords          TEXT    NOT NULL,
     phonetic          INTEGER DEFAULT 0,
+    whole_word        INTEGER DEFAULT 0,
     date_start        TEXT    NOT NULL,
     date_end          TEXT    NOT NULL,
     status            TEXT    DEFAULT 'active',
@@ -200,6 +230,7 @@ def _init_db():
         ('notify_telegram',  'INTEGER DEFAULT 0'),   # searches table
         ('init_rows_done',   'INTEGER DEFAULT 0'),
         ('init_rows_total',  'INTEGER DEFAULT 0'),
+        ('whole_word',       'INTEGER DEFAULT 0'),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -534,6 +565,7 @@ def create_app() -> Flask:
             name          = request.form.get('name', '').strip()
             kw_raw        = request.form.get('keywords', '').strip()
             phonetic      = 1 if request.form.get('phonetic') else 0
+            whole_word    = 1 if request.form.get('whole_word') else 0
             d_start       = request.form.get('date_start', '')
             d_end         = request.form.get('date_end', '')
             dmode         = request.form.get('delivery_mode', 'final')
@@ -546,11 +578,11 @@ def create_app() -> Flask:
                 kws = [k.strip() for k in re.split(r'[\n,]+', kw_raw) if k.strip()]
                 db().execute("""
                     INSERT INTO searches
-                      (user_id,name,keywords,phonetic,date_start,date_end,
+                      (user_id,name,keywords,phonetic,whole_word,date_start,date_end,
                        delivery_mode,report_email,status,notify_telegram)
-                    VALUES (?,?,?,?,?,?,?,?,'active',?)
+                    VALUES (?,?,?,?,?,?,?,?,?,'active',?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
-                      phonetic, d_start, d_end, dmode, remail, notify_tg))
+                      phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada.', 'success')
                 return redirect(url_for('dashboard'))
@@ -606,7 +638,8 @@ def create_app() -> Flask:
             params + [pp, (page-1)*pp]
         ).fetchall()
         # Enriquece cada match con precise_timestamp y centered_text
-        matches = [_enrich_match(m, phonetic=bool(s['phonetic'])) for m in matches_raw]
+        matches = [_enrich_match(m, phonetic=bool(s['phonetic']), whole_word=bool(s['whole_word']))
+                   for m in matches_raw]
         kw_all = d.execute("SELECT DISTINCT keyword FROM matches WHERE search_id=? ORDER BY keyword", (sid,)).fetchall()
         ch_all = d.execute("SELECT DISTINCT channel_name FROM matches WHERE search_id=? ORDER BY channel_name", (sid,)).fetchall()
         prog_all = d.execute("""
@@ -684,7 +717,7 @@ def create_app() -> Flask:
         ).fetchone()
         if not m:
             return None, None
-        md = _enrich_match(m, phonetic=bool(s['phonetic']))
+        md = _enrich_match(m, phonetic=bool(s['phonetic']), whole_word=bool(s['whole_word']))
         try:
             moment = datetime.fromisoformat(md['precise_timestamp'])
         except Exception:
@@ -734,22 +767,24 @@ def create_app() -> Flask:
             new_end    = request.form.get('date_end')
             new_kws    = json.dumps(kws, ensure_ascii=False)
             new_phon   = 1 if request.form.get('phonetic') else 0
+            new_whole  = 1 if request.form.get('whole_word') else 0
 
             # Si cambian fechas, palabras o tipo de búsqueda → re-escanear histórico
             needs_reinit = (
-                new_start != s['date_start'] or
-                new_end   != s['date_end']   or
-                new_kws   != s['keywords']   or
-                new_phon  != s['phonetic']
+                new_start != s['date_start']  or
+                new_end   != s['date_end']    or
+                new_kws   != s['keywords']    or
+                new_phon  != s['phonetic']    or
+                new_whole != s['whole_word']
             )
 
             db().execute("""
                 UPDATE searches SET
-                  name=?, keywords=?, phonetic=?, date_start=?, date_end=?,
+                  name=?, keywords=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
                   initialized=?
                 WHERE id=?
-            """, (name, new_kws, new_phon, new_start, new_end,
+            """, (name, new_kws, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
@@ -956,8 +991,9 @@ def create_app() -> Flask:
                 "SELECT * FROM matches WHERE search_id=? ORDER BY found_at DESC LIMIT 50", (sid,)
             ).fetchall()
         total = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
-        phonetic = bool(s['phonetic'])
-        return jsonify(matches=[_enrich_match(r, phonetic=phonetic) for r in rows],
+        phonetic   = bool(s['phonetic'])
+        whole_word = bool(s['whole_word'])
+        return jsonify(matches=[_enrich_match(r, phonetic=phonetic, whole_word=whole_word) for r in rows],
                        total=total)
 
     @app.route('/api/stats')
@@ -1080,25 +1116,33 @@ def create_app() -> Flask:
         alt_fill = PatternFill('solid', fgColor='F1F5F9')
         hl_fill  = PatternFill('solid', fgColor='FEF9C3')   # amarillo suave para fila activa
 
-        def _bold_kw(text, keyword, phonetic=False):
+        def _bold_kw(text, keyword, phonetic=False, whole_word=False):
             """Devuelve CellRichText con la keyword en negrita.
             Modo exacto: case-insensitive. Modo fonético: resalta cada palabra
-            del texto que sea fonéticamente equivalente al keyword."""
+            del texto que sea fonéticamente equivalente al keyword. En modo
+            whole_word exige límites de palabra (no resalta "día" dentro de
+            "diálogo")."""
             if not text or not keyword:
                 return text or ''
             bold = InlineFont(b=True, color='1D4ED8')
             parts, last = [], 0
             if phonetic:
-                ph_kw = _phonetic(keyword)
+                ph_kw   = _phonetic(keyword)
+                pattern = re.compile(r'(?<!\w)' + re.escape(ph_kw) + r'(?!\w)') if whole_word else None
                 for m in re.finditer(r'\S+', text):
-                    word = m.group()
-                    if ph_kw in _phonetic(word):
+                    word    = m.group()
+                    word_ph = _phonetic(word)
+                    matched = bool(pattern.search(word_ph)) if whole_word else (ph_kw in word_ph)
+                    if matched:
                         if m.start() > last:
                             parts.append(text[last:m.start()])
                         parts.append(TextBlock(bold, word))
                         last = m.end()
             else:
-                for m in re.compile(re.escape(keyword), re.IGNORECASE).finditer(text):
+                kw_pattern = re.escape(keyword)
+                if whole_word:
+                    kw_pattern = r'(?<!\w)' + kw_pattern + r'(?!\w)'
+                for m in re.compile(kw_pattern, re.IGNORECASE).finditer(text):
                     if m.start() > last:
                         parts.append(text[last:m.start()])
                     parts.append(TextBlock(bold, m.group()))
@@ -1200,8 +1244,8 @@ def create_app() -> Flask:
                 ws.cell(row=row_num, column=2, value=m['channel_name'] or '')
                 ws.cell(row=row_num, column=3, value=programa)
                 ws.cell(row=row_num, column=4, value=m['keyword'] or '')
-                ws.cell(row=row_num, column=5, value=_bold_kw(m['matched_text'] or '', m['keyword'] or '', bool(s['phonetic'])))
-                ws.cell(row=row_num, column=6, value=_bold_kw(contexto, m['keyword'] or '', bool(s['phonetic'])))
+                ws.cell(row=row_num, column=5, value=_bold_kw(m['matched_text'] or '', m['keyword'] or '', bool(s['phonetic']), bool(s['whole_word'])))
+                ws.cell(row=row_num, column=6, value=_bold_kw(contexto, m['keyword'] or '', bool(s['phonetic']), bool(s['whole_word'])))
                 ws.cell(row=row_num, column=7, value=str(m['found_at'] or '')[:19])
 
                 fill = alt_fill if i % 2 == 0 else None

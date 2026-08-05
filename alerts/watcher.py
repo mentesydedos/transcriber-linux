@@ -44,10 +44,19 @@ def _phonetic_es(text: str) -> str:
     t = re.sub(r'x', 'ks', t)          # x → ks
     return t
 
-def _match(text: str, keyword: str, phonetic: bool) -> bool:
-    if phonetic:
-        return _phonetic_es(keyword) in _phonetic_es(text)
-    return _strip_accents(keyword) in _strip_accents(text)
+def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) -> bool:
+    """whole_word exige que la keyword aparezca delimitada por separadores de
+    palabra (no dentro de una palabra compuesta, ej. "día" no debe casar con
+    "diálogo" ni "mediodía"). Se comprueba con límites \\w sobre el mismo
+    texto normalizado en ambos lados (keyword y texto), así que es seguro
+    aunque la normalización fonética cambie longitudes de palabra."""
+    norm_text = _phonetic_es(text)    if phonetic else _strip_accents(text)
+    norm_kw   = _phonetic_es(keyword) if phonetic else _strip_accents(keyword)
+    if not norm_kw:
+        return False
+    if whole_word:
+        return re.search(r'(?<!\w)' + re.escape(norm_kw) + r'(?!\w)', norm_text) is not None
+    return norm_kw in norm_text
 
 
 # ── Conexiones ────────────────────────────────────────────────────────────────
@@ -92,8 +101,9 @@ def _process(adb, tdb, smtp, cfg=None):
         "SELECT * FROM searches WHERE initialized=0 AND status='active'"
     ).fetchall()
     for s in new_searches:
-        keywords = json.loads(s['keywords'])
-        phonetic = bool(s['phonetic'])
+        keywords   = json.loads(s['keywords'])
+        phonetic   = bool(s['phonetic'])
+        whole_word = bool(s['whole_word'])
         BATCH   = 2000
 
         # Contar total de registros en el rango para mostrar progreso
@@ -128,7 +138,7 @@ def _process(adb, tdb, smtp, cfg=None):
                 if not text or text == '[~]':
                     continue
                 for kw in keywords:
-                    if _match(text, kw, phonetic):
+                    if _match(text, kw, phonetic, whole_word):
                         adb.execute("""INSERT OR IGNORE INTO matches
                             (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
                             VALUES (?,?,?,?,?,?)""",
@@ -177,10 +187,11 @@ def _process(adb, tdb, smtp, cfg=None):
             if not text or text == '[~]':
                 continue
             for s in active:
-                keywords = json.loads(s['keywords'])
-                phonetic = bool(s['phonetic'])
+                keywords   = json.loads(s['keywords'])
+                phonetic   = bool(s['phonetic'])
+                whole_word = bool(s['whole_word'])
                 for kw in keywords:
-                    if _match(text, kw, phonetic):
+                    if _match(text, kw, phonetic, whole_word):
                         adb.execute("""INSERT OR IGNORE INTO matches
                             (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
                             VALUES (?,?,?,?,?,?)""",

@@ -45,6 +45,14 @@
         <small style="color:var(--muted)">(b/v, ll/y, c/z/s, sin tildes)</small>
       </label>
     </div>
+    <div class="form-check form-switch mt-2">
+      <input class="form-check-input" type="checkbox" name="whole_word" id="whole_word"
+             style="width:2.5em;height:1.3em" {{ 'checked' if s.whole_word }}>
+      <label class="form-check-label ms-2" for="whole_word">
+        Solo palabra completa
+        <small style="color:var(--muted)">("día" no detecta "diálogo" ni "mediodía")</small>
+      </label>
+    </div>
   </div>
 
   <div class="card p-4 mb-3">
