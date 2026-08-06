@@ -23,6 +23,7 @@ librosa>=0.10.0
 # Flask + backend de alertas (módulo alerts/)
 flask>=3.0.0
 requests>=2.31.0
+openpyxl>=3.1.0
 
 # NOTA:
 #   torch se instala aparte desde el índice CUDA 12.1:

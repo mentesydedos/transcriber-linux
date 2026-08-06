@@ -756,8 +756,12 @@ def create_app() -> Flask:
     @app.route('/videowall')
     @login_required
     def videowall():
+        import math
         from alerts.videowall import list_channels
-        return render_template('videowall.html', channels=list_channels())
+        channels = list_channels()
+        cols = 6
+        rows = max(1, math.ceil(len(channels) / cols)) if channels else 1
+        return render_template('videowall.html', channels=channels, cols=cols, rows=rows)
 
     @app.route('/videowall/thumb/<int:num>.jpg')
     @login_required
@@ -770,6 +774,53 @@ def create_app() -> Flask:
         if out is None:
             return ('', 404)
         resp = send_file(out, mimetype='image/jpeg')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @app.route('/videowall/stream/<int:num>')
+    @login_required
+    def videowall_stream(num):
+        """MJPEG en vivo (multipart/x-mixed-replace) — requiere threaded=True
+        en app.run() (ver run_alerts.py), esta conexión se mantiene abierta
+        indefinidamente mientras la pestaña esté abierta."""
+        from flask import Response
+        from alerts.videowall import list_channels, stream_mjpeg
+        ch = next((c for c in list_channels() if c['num'] == num), None)
+        if ch is None:
+            return ('', 404)
+        width = request.args.get('w', 640, type=int)
+        resp = Response(stream_mjpeg(ch['folder'], width=width),
+                         mimetype='multipart/x-mixed-replace; boundary=ffmpegframe')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @app.route('/videowall/av/<int:num>')
+    @login_required
+    def videowall_av(num):
+        """Video+audio real (MP4 fragmentado h264/aac) de UN canal — para la
+        vista ampliada, consumido por un <video> nativo del navegador. Solo
+        tiene sentido para un canal a la vez (no el mosaico completo)."""
+        from flask import Response
+        from alerts.videowall import list_channels, stream_av
+        ch = next((c for c in list_channels() if c['num'] == num), None)
+        if ch is None:
+            return ('', 404)
+        width = request.args.get('w', 720, type=int)
+        resp = Response(stream_av(ch['folder'], width=width), mimetype='video/mp4')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @app.route('/videowall/stream/all')
+    @login_required
+    def videowall_stream_all():
+        """MJPEG en vivo de TODOS los canales compuestos en una sola grilla —
+        un solo stream HTTP para toda la página, evitando el límite de 6
+        conexiones simultáneas por origen que tienen los navegadores (con un
+        <img> por canal, los primeros 6 acaparan el cupo para siempre)."""
+        from flask import Response
+        from alerts.videowall import list_channels, stream_wall_mjpeg
+        resp = Response(stream_wall_mjpeg(list_channels()),
+                         mimetype='multipart/x-mixed-replace; boundary=ffmpegframe')
         resp.headers['Cache-Control'] = 'no-store'
         return resp
 

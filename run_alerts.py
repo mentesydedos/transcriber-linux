@@ -39,4 +39,9 @@ if __name__ == '__main__':
     print(f"\n  AlertaTV corriendo en  http://localhost:{args.port}")
     print(f"  Ctrl+C para detener\n")
 
-    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    # threaded=True: necesario para el monitor de señales (/videowall), que
+    # mantiene conexiones HTTP de streaming abiertas por tiempo indefinido —
+    # sin esto, el servidor de Werkzeug atiende una sola conexión a la vez y
+    # una pestaña del mosaico abierta bloquearía todo el dashboard para
+    # cualquier otro usuario.
+    app.run(host=args.host, port=args.port, debug=False, use_reloader=False, threaded=True)

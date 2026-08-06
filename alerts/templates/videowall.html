@@ -5,56 +5,102 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div>
     <div class="page-title">Monitor de señales</div>
-    <div style="font-size:.82rem;color:var(--text2)">
-      {{ channels|length }} canales · actualiza cada ~6s · leído de las grabaciones locales, sin tocar TVHeadend
+    <div style="font-size:.82rem;color:var(--text2)" id="vwSubtitle">
+      {{ channels|length }} canales · una sola conexión de video (grilla compuesta en el servidor) · leído de las grabaciones locales, sin tocar TVHeadend
     </div>
   </div>
 </div>
 
-<div class="row g-3">
-  {% for c in channels %}
-  <div class="col-6 col-md-4 col-xl-3 col-xxl-2">
-    <div class="card h-100">
-      <div style="position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px 12px 0 0;overflow:hidden">
-        <img data-src="/videowall/thumb/{{ c.num }}.jpg"
-             data-num="{{ c.num }}"
-             style="width:100%;height:100%;object-fit:cover;display:block"
-             onerror="this.closest('.card').querySelector('.vw-noSignal').style.display='flex'; this.style.display='none';"
-             onload="this.style.display='block'; this.closest('.card').querySelector('.vw-noSignal').style.display='none';">
-        <div class="vw-noSignal" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;color:var(--muted);font-size:.75rem">
-          <i class="bi bi-camera-video-off mb-1" style="font-size:1.4rem"></i>
-          sin señal
-        </div>
-      </div>
-      <div class="card-body py-2 px-2">
-        <div style="font-size:.78rem;font-weight:600;color:var(--green);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-             title="{{ c.label }}">
-          {{ c.label }}
-        </div>
-        <div style="font-size:.68rem;color:var(--muted)">canal_{{ '%02d'|format(c.num) }}</div>
-      </div>
-    </div>
+{% if channels %}
+<div id="vwSingle" style="display:none">
+  <button id="vwBack" class="btn btn-sm btn-outline-secondary mb-2">
+    <i class="bi bi-arrow-left"></i> Volver al mosaico
+  </button>
+  <div id="vwSingleLabel" style="font-weight:600;margin-bottom:.4rem;color:var(--green)"></div>
+  <div class="card" style="max-width:960px;margin:0 auto">
+    <video id="vwSingleVideo" controls playsinline
+           style="width:100%;height:auto;display:block;border-radius:12px;background:#000"></video>
   </div>
-  {% else %}
-  <div class="col-12">
-    <p style="color:var(--muted)">No hay canales grabándose en output_video/.</p>
-  </div>
-  {% endfor %}
 </div>
 
-{% block scripts %}
+<div id="vwWall" class="card">
+  <div style="position:relative">
+    <img id="vwWallImg" src="/videowall/stream/all" style="width:100%;height:auto;display:block;border-radius:12px;background:#000">
+    <div id="vwOverlay" style="position:absolute;inset:0;display:grid;
+         grid-template-columns:repeat({{ cols }},1fr);grid-template-rows:repeat({{ rows }},1fr)">
+      {% for c in channels %}
+      <div class="vw-tile" data-num="{{ c.num }}" data-label="{{ c.label }}"
+           style="cursor:pointer" title="{{ c.label }} — clic para ver en grande"></div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<style>
+  .vw-tile { transition: background .1s; }
+  .vw-tile:hover { background: rgba(255,255,255,.15); }
+</style>
+
 <script>
-(function() {
-  const REFRESH = 6000;
-  const tiles = document.querySelectorAll('img[data-src]');
-  tiles.forEach((img, i) => {
-    const tick = () => { img.src = img.dataset.src + '?_=' + Date.now(); };
-    setTimeout(() => {
-      tick();
-      setInterval(tick, REFRESH);
-    }, i * (REFRESH / Math.max(tiles.length, 1)));
+(function () {
+  const wall      = document.getElementById('vwWall');
+  const single    = document.getElementById('vwSingle');
+  const video     = document.getElementById('vwSingleVideo');
+  const singleLbl = document.getElementById('vwSingleLabel');
+  const backBtn   = document.getElementById('vwBack');
+  let currentNum  = null;
+
+  function openChannel(num, label) {
+    currentNum = num;
+    wall.style.display   = 'none';
+    single.style.display = '';
+    singleLbl.textContent = 'Canal ' + num + ' — ' + label;
+    video.src = '/videowall/av/' + num + '?w=720';
+    video.load();
+    // play() dentro del handler de clic (gesto del usuario) — los
+    // navegadores permiten audio con sonido si arranca por una interacción
+    // directa, a diferencia de un autoplay sin gesto.
+    video.play().catch(function () {});
+  }
+
+  document.querySelectorAll('.vw-tile').forEach(function (tile) {
+    tile.addEventListener('click', function () {
+      openChannel(tile.dataset.num, tile.dataset.label);
+    });
+  });
+
+  // Si el stream se corta (p. ej. al rotar el segmento cada 30 min, el MP4
+  // fragmentado reinicia su init segment y el navegador no puede continuar
+  // el mismo <video>), recargar automáticamente el mismo canal.
+  video.addEventListener('error', function () {
+    if (currentNum !== null && single.style.display !== 'none') {
+      video.src = '/videowall/av/' + currentNum + '?w=720';
+      video.load();
+      video.play().catch(function () {});
+    }
+  });
+  video.addEventListener('stalled', function () {
+    if (single.style.display !== 'none' && video.currentTime === 0) {
+      video.load();
+      video.play().catch(function () {});
+    }
+  });
+
+  backBtn.addEventListener('click', function () {
+    // Quitar el src y cargar cierra la conexión del stream individual (el
+    // servidor limpia su proceso ffmpeg al detectar la desconexión) — el
+    // mosaico general nunca se detuvo, así que regresar es instantáneo.
+    currentNum = null;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    single.style.display = 'none';
+    wall.style.display   = '';
   });
 })();
 </script>
-{% endblock %}
+{% else %}
+<p style="color:var(--muted)">No hay canales grabándose en output_video/.</p>
+{% endif %}
+
 {% endblock %}

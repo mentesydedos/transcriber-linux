@@ -2,11 +2,14 @@
 video_recorder.py — Graba en bloques de 30 min el video de los canales del M3U.
 
 Jala el stream CRUDO de TVHeadend (`profile=pass`, sin transcodificar del lado
-del servidor) y comprime LOCALMENTE con NVENC (GPU) a H.264 ~1500kb/s + AAC.
-Esto le quita toda la carga de transcodificación a TVHeadend — su CPU no la
-soporta de forma confiable (ver incidente 2026-08-04: con solo 4 transcodes
-concurrentes dejó de responder su API). El GPU de esta máquina, en cambio,
-tiene margen de sobra (Parakeet ASR usa 1-2%).
+del servidor) y comprime LOCALMENTE: canales 1-NVENC_LIMIT con NVENC (GPU) a
+HEVC ~820kb/s + AAC, el resto con libx264 (CPU) a ~1100kb/s + AAC (HEVC por
+CPU se probó y descartado: ~2.5x el costo de libx264 a la misma velocidad,
+inviable a 18 canales concurrentes). Esto le quita toda la carga de
+transcodificación a TVHeadend — su CPU no la soporta de forma confiable (ver
+incidente 2026-08-04: con solo 4 transcodes concurrentes dejó de responder su
+API). El GPU de esta máquina, en cambio, tiene margen de sobra (Parakeet ASR
+usa 1-2%).
 
 Limitado a TRANSCRIBER_VIDEO_MAX_CHANNELS canales (default 19) mientras el
 enlace de red siga en 100Mb/s: crudo ≈ 4.5Mbps/canal, y 19 canales + el audio
@@ -36,13 +39,32 @@ MAX_CHANNELS   = int(os.environ.get("TRANSCRIBER_VIDEO_MAX_CHANNELS", "19"))
 # hilos, con margen de sobra).
 NVENC_LIMIT    = int(os.environ.get("TRANSCRIBER_VIDEO_NVENC_LIMIT", "8"))
 CPU_PRESET     = os.environ.get("TRANSCRIBER_VIDEO_CPU_PRESET", "veryfast")
-VIDEO_BITRATE  = os.environ.get("TRANSCRIBER_VIDEO_BITRATE", "1500k")
-VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_MAXRATE", "1800k")
-VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_BUFSIZE", "3000k")
+# Bitrate CPU/libx264 (canales > NVENC_LIMIT): bajado de 1500k/1800k/3000k a
+# 1100k/1300k/2200k (~27-39% menos según canal, medido) tras comparar cuadros
+# reales lado a lado (texto de ticker, detalle fino) sin pérdida visible.
+VIDEO_BITRATE  = os.environ.get("TRANSCRIBER_VIDEO_BITRATE", "1100k")
+VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_MAXRATE", "1300k")
+VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_BUFSIZE", "2200k")
+# HEVC/NVENC (canales <= NVENC_LIMIT): a paridad de calidad visual, HEVC pesa
+# ~40-45% menos que H264 al mismo bitrate — confirmado con hevc_nvenc en esta
+# GPU (el error "incompatible client key" de las primeras pruebas era el tope
+# de 8 sesiones NVENC de GeForce chocando con producción, no una limitación
+# real de HEVC). Sin costo extra de CPU: la GPU sigue hacienda todo el trabajo.
+GPU_VIDEO_BITRATE = os.environ.get("TRANSCRIBER_VIDEO_GPU_BITRATE", "820k")
+GPU_VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_MAXRATE", "984k")
+GPU_VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_BUFSIZE", "1640k")
 VIDEO_HEIGHT   = os.environ.get("TRANSCRIBER_VIDEO_HEIGHT", "480")
 AUDIO_BITRATE  = os.environ.get("TRANSCRIBER_VIDEO_ABITRATE", "96k")
 RESTART_DELAY  = 5
 STATUS_EVERY   = 60
+
+# Ventana nocturna sin grabación (00:00-05:30 hora local por default) — libera
+# ~23% del consumo diario de disco y deja un hueco fijo para mantenimiento
+# (revisar servicios, limpiar, etc.) sin competir con grabación en curso.
+PAUSE_START_H  = int(os.environ.get("TRANSCRIBER_VIDEO_PAUSE_START_H", "0"))
+PAUSE_START_M  = int(os.environ.get("TRANSCRIBER_VIDEO_PAUSE_START_M", "0"))
+PAUSE_END_H    = int(os.environ.get("TRANSCRIBER_VIDEO_PAUSE_END_H", "5"))
+PAUSE_END_M    = int(os.environ.get("TRANSCRIBER_VIDEO_PAUSE_END_M", "30"))
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -58,7 +80,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger("video_recorder")
 
-stop_event = threading.Event()
+stop_event   = threading.Event()
+active_procs: dict[int, subprocess.Popen] = {}
+active_lock  = threading.Lock()
+
+
+def _in_pause_window(now=None) -> bool:
+    now = now or time.localtime()
+    start = PAUSE_START_H * 60 + PAUSE_START_M
+    end   = PAUSE_END_H * 60 + PAUSE_END_M
+    cur   = now.tm_hour * 60 + now.tm_min
+    if start <= end:
+        return start <= cur < end
+    return cur >= start or cur < end  # ventana que cruza medianoche
+
+
+def _seconds_until_resume(now=None) -> float:
+    now = now or time.localtime()
+    cur = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+    end = PAUSE_END_H * 3600 + PAUSE_END_M * 60
+    delta = end - cur
+    return delta if delta > 0 else delta + 86400
+
+
+def _seconds_until_pause(now=None) -> float:
+    now = now or time.localtime()
+    cur = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+    start = PAUSE_START_H * 3600 + PAUSE_START_M * 60
+    delta = start - cur
+    return delta if delta > 0 else delta + 86400
+
+
+def pause_scheduler():
+    """Cuando entra la ventana nocturna, corta todas las grabaciones activas
+    de inmediato (en vez de esperar a que cada una termine sola) — cada
+    channel_recorder() detecta la ventana al reintentar y se queda dormido
+    hasta la hora de reanudar."""
+    while not stop_event.is_set():
+        wait_s = _seconds_until_pause()
+        if stop_event.wait(wait_s):
+            break
+        with active_lock:
+            procs = list(active_procs.values())
+        if procs:
+            logger.info(f"Ventana nocturna ({PAUSE_START_H:02d}:{PAUSE_START_M:02d}"
+                        f"-{PAUSE_END_H:02d}:{PAUSE_END_M:02d}): deteniendo "
+                        f"{len(procs)} grabaciones activas")
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
 
 
 def parse_m3u(filepath: str) -> list[dict]:
@@ -102,18 +174,33 @@ def channel_recorder(channel_id: int, channel_name: str, url: str):
           f"scale=-2:{VIDEO_HEIGHT}")
 
     if channel_id <= NVENC_LIMIT:
-        vcodec_args = ["-c:v", "h264_nvenc", "-preset", "p4",
-                       "-b:v", VIDEO_BITRATE, "-maxrate", VIDEO_MAXRATE, "-bufsize", VIDEO_BUFSIZE]
+        vcodec_args = ["-c:v", "hevc_nvenc", "-preset", "p4",
+                       "-b:v", GPU_VIDEO_BITRATE, "-maxrate", GPU_VIDEO_MAXRATE, "-bufsize", GPU_VIDEO_BUFSIZE]
     else:
         vcodec_args = ["-c:v", "libx264", "-preset", CPU_PRESET,
                        "-b:v", VIDEO_BITRATE, "-maxrate", VIDEO_MAXRATE, "-bufsize", VIDEO_BUFSIZE]
 
     while not stop_event.is_set():
+        if _in_pause_window():
+            wait_s = _seconds_until_resume()
+            logger.info(f"[{channel_id:02d}] {channel_name}: ventana nocturna, "
+                        f"reanuda en {wait_s/60:.0f} min")
+            stop_event.wait(wait_s)
+            continue
+
         cmd = [
             "ffmpeg", "-nostdin",
             "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5", "-reconnect_at_eof", "1",
             "-timeout", "8000000",
+            # +discardcorrupt / ignore_err: algunos subcanales (ej. A más +,
+            # canal 11) transmiten AC3 mal formado en el origen -- confirmado
+            # comparando contra un subcanal hermano en el mismo mux/tuner
+            # (Azteca 7) que decodifica sin error, así que no es la señal ni
+            # la red. Sin estas banderas ffmpeg llena el log con miles de
+            # "Error submitting packet to decoder" por minuto; con ellas,
+            # simplemente descarta el frame de audio dañado y sigue.
+            "-fflags", "+discardcorrupt", "-err_detect", "ignore_err",
             "-i", raw_url,
             "-vf", vf,
             *vcodec_args,
@@ -125,11 +212,14 @@ def channel_recorder(channel_id: int, channel_name: str, url: str):
             "-loglevel", "warning",
         ]
         logger.info(f"[{channel_id:02d}] {channel_name}: iniciando grabación")
+        proc = None
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                      text=True, encoding="utf-8", errors="replace")
+            with active_lock:
+                active_procs[channel_id] = proc
             for line in proc.stderr:
-                if stop_event.is_set():
+                if stop_event.is_set() or _in_pause_window():
                     break
                 line = line.strip()
                 if line:
@@ -138,6 +228,8 @@ def channel_recorder(channel_id: int, channel_name: str, url: str):
         except Exception as e:
             logger.error(f"[{channel_id:02d}] {channel_name}: excepción — {e}")
         finally:
+            with active_lock:
+                active_procs.pop(channel_id, None)
             try:
                 if proc and proc.poll() is None:
                     proc.terminate()
@@ -169,7 +261,12 @@ def main():
     logger.info(f"{len(all_channels)} canales en {M3U_FILE}. Grabando {len(channels)} "
                 f"(limite TRANSCRIBER_VIDEO_MAX_CHANNELS={MAX_CHANNELS}). "
                 f"Diferidos por ancho de banda: {[c['name'] for c in deferred] or 'ninguno'}. "
-                f"Salida: {VIDEO_DIR.resolve()}")
+                f"Salida: {VIDEO_DIR.resolve()}. "
+                f"Ventana nocturna sin grabar: {PAUSE_START_H:02d}:{PAUSE_START_M:02d}"
+                f"-{PAUSE_END_H:02d}:{PAUSE_END_M:02d}")
+
+    ps = threading.Thread(target=pause_scheduler, name="pause-scheduler", daemon=True)
+    ps.start()
 
     threads = []
     for i, ch in enumerate(channels, start=1):
