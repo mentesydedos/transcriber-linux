@@ -137,6 +137,7 @@ class Channel:
     id:            int
     name:          str
     url:           str
+    headers:       Optional[str]     = None      # ver #EXTHEADER en parse_m3u
     process:       Optional[Process] = None
     out_queue:     Optional[Queue]   = None      # mp.Queue(maxsize=3) exclusiva del canal
     restarts:      int = 0
@@ -159,7 +160,15 @@ class InferenceWorker:
 
 # ── Parser M3U ────────────────────────────────────────────────────────────────
 def parse_m3u(filepath: str) -> list[dict]:
-    channels, current_name = [], None
+    """#EXTHEADER (opcional, entre #EXTINF y la URL) manda un header HTTP crudo
+    en la conexión de ffmpeg/ffprobe a esa URL — necesario para estaciones de
+    radio detrás de Zeno.fm, que rechazan con 401 sin un Origin/Referer del
+    sitio autorizado. Ejemplo:
+        #EXTINF:-1,Nombre
+        #EXTHEADER:Origin: https://sitio-dueno.com
+        https://stream.zeno.fm/xxxxx
+    """
+    channels, current_name, current_headers = [], None, None
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -168,9 +177,12 @@ def parse_m3u(filepath: str) -> list[dict]:
             if line.startswith("#EXTINF"):
                 m = re.search(r',(.+)$', line)
                 current_name = m.group(1).strip() if m else f"Canal_{len(channels)+1}"
+            elif line.startswith("#EXTHEADER:"):
+                current_headers = line[len("#EXTHEADER:"):].strip()
             elif not line.startswith("#"):
-                channels.append({"name": current_name or f"Canal_{len(channels)+1}", "url": line})
-                current_name = None
+                channels.append({"name": current_name or f"Canal_{len(channels)+1}",
+                                 "url": line, "headers": current_headers})
+                current_name, current_headers = None, None
     return channels
 
 # ── Watchdog helpers ──────────────────────────────────────────────────────────
@@ -263,7 +275,7 @@ def start_channel_worker(ch: Channel) -> Process:
         ch.out_queue = Queue(maxsize=CHANNEL_QUEUE_MAXSIZE)
     p = Process(
         target=worker.run_worker,
-        args=(ch.id, ch.name, ch.url, ch.out_queue),
+        args=(ch.id, ch.name, ch.url, ch.out_queue, ch.headers),
         name=f"worker-{ch.id:02d}",
         daemon=True,
     )
@@ -579,7 +591,7 @@ def main():
             continue
         if SKIP_CHANNEL_NAMES and name in SKIP_CHANNEL_NAMES:
             continue
-        channels.append(Channel(id=i, name=name, url=ch["url"]))
+        channels.append(Channel(id=i, name=name, url=ch["url"], headers=ch.get("headers")))
     logger.info(f"Canales activos: {len(channels)} de {len(raw[:MAX_CHANNELS])} "
                 f"(omitidos por índice: {sorted(SKIP_CHANNELS)}, "
                 f"only={sorted(ONLY_CHANNELS) or '—'}, skip_names={sorted(SKIP_CHANNEL_NAMES) or '—'})")

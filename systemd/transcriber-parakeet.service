@@ -24,9 +24,12 @@ Environment="TRANSCRIBER_ENGINE=parakeet"
 Environment="TRANSCRIBER_PARAKEET_BATCH=8"
 # Fuente TVHeadend (misma que usaba Qwen). Cambiar a local.m3u tras el cutover.
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
-# M3U ampliado a 26 canales (todo TVHeadend salvo Maussan Televisión, 2026-08-04).
-# Default de manager.py es 8: sin esto trunca la lista a los primeros 8.
-Environment="TRANSCRIBER_MAX_CHANNELS=30"
+# M3U: 26 canales de TV (TVHeadend) + 25 estaciones de radio FM de la ZMG por
+# streaming directo (agregadas 2026-08-06, posiciones 27-51 del M3U — mismo
+# worker.py, ffmpeg no distingue la fuente). Algunas (Zeno.fm) necesitan un
+# header Origin/Referer -- ver #EXTHEADER en el M3U y manager.py:parse_m3u.
+# Default de manager.py es 8: sin esto trunca la lista.
+Environment="TRANSCRIBER_MAX_CHANNELS=51"
 # Largo de chunk. 30s es lo maximo confiable con este stream (se corta ~cada 60s).
 # Subir requiere primero estabilizar el stream. Ver TRANSCRIBER_CHUNK_SEC en worker.py.
 Environment="TRANSCRIBER_CHUNK_SEC=30"

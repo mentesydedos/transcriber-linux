@@ -35,8 +35,11 @@ Environment="TRANSCRIBER_M3U=TV audio.m3u"
 # Con ambas causas resueltas, procesos ffmpeg hacia TVHeadend bajaron de 129 a
 # 18. Se sube a los 26 canales completos para probar si esto ya alcanza.
 Environment="TRANSCRIBER_VIDEO_MAX_CHANNELS=26"
-Environment="TRANSCRIBER_VIDEO_BITRATE=1500k"
-Environment="TRANSCRIBER_VIDEO_MAXRATE=1800k"
+# Bitrate y NVENC_LIMIT: sin override aqui a proposito -- los defaults viven
+# en video_recorder.py (2026-08-06: HEVC/GPU 820k, libx264/CPU 1100k,
+# NVENC_LIMIT=16 tras el parche nvidia-patch). Un override viejo de
+# BITRATE=1500k/MAXRATE=1800k quedo aqui pisando el default nuevo del codigo
+# -- si se vuelve a necesitar un override, hacerlo a proposito y con fecha.
 Environment="TRANSCRIBER_VIDEO_HEIGHT=480"
 # Salida: local por ahora (796GB libres). Cambiar a la ruta del NAS cuando este montado,
 # ej. /mnt/nas/transcriber-video, y subir/quitar la retencion en cleanup_video.sh.

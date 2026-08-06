@@ -33,10 +33,19 @@ M3U_FILE       = os.environ.get("TRANSCRIBER_M3U", "TV audio.m3u")
 VIDEO_DIR      = Path(os.environ.get("TRANSCRIBER_VIDEO_DIR", "output_video"))
 SEGMENT_SEC    = int(os.environ.get("TRANSCRIBER_VIDEO_SEGMENT_SEC", "1800"))
 MAX_CHANNELS   = int(os.environ.get("TRANSCRIBER_VIDEO_MAX_CHANNELS", "19"))
-# El driver de la RTX 4070 limita NVENC a 8 sesiones concurrentes en GeForce
-# (probado 2026-08-04: canales 9+ fallan con "OpenEncodeSessionEx failed").
-# Los canales por encima de este limite usan libx264 por CPU (i9-14900, 32
-# hilos, con margen de sobra).
+# El límite artificial de 8 sesiones NVENC de GeForce se eliminó con el
+# parche de https://github.com/keylase/nvidia-patch (driver 580.173.02,
+# aplicado 2026-08-06) — pero el techo real es la VRAM compartida con
+# Parakeet/Cohere, y NO solo su uso en reposo (~7.3GB): CARGAR el modelo de
+# Parakeet necesita un pico de VRAM más alto que su huella final, confirmado
+# en producción (2026-08-06): con 14 sesiones NVENC + Cohere ya cargado,
+# Parakeet falló 2 veces con CUDA out of memory al reiniciar (quedaba <40MB
+# libres de 11.6GB). Se regresó a 8 (el original, antes del parche) porque
+# es el único número ya validado como seguro para que AMBOS motores ASR
+# puedan recargar su modelo sin chocar. Si se vuelve a subir, probar primero
+# reiniciando Parakeet/Cohere con esa carga de NVENC activa, no solo medir
+# el uso en reposo. Los canales por encima de este límite usan libx264 por
+# CPU (i9-14900, 32 hilos, con margen de sobra).
 NVENC_LIMIT    = int(os.environ.get("TRANSCRIBER_VIDEO_NVENC_LIMIT", "8"))
 CPU_PRESET     = os.environ.get("TRANSCRIBER_VIDEO_CPU_PRESET", "veryfast")
 # Bitrate CPU/libx264 (canales > NVENC_LIMIT): bajado de 1500k/1800k/3000k a

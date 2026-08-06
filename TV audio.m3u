@@ -51,3 +51,58 @@ http://poncho:1234@148.201.38.136:9981/stream/channelid/1694565889?profile=audio
 http://poncho:1234@148.201.38.136:9981/stream/channelid/469756007?profile=audio-aac
 #EXTINF:-1 tvg-id="218112c17da0ec72daf4821a11fb6e18" tvg-chno="44.2",Canal 44
 http://poncho:1234@148.201.38.136:9981/stream/channelid/1091731745?profile=audio-aac
+#EXTINF:-1 tvg-chno="88.7",Arroba FM
+https://stream.zeno.fm/es06s1g9d78uv
+#EXTINF:-1 tvg-chno="89.1",La Bestia Grupera
+https://sg.centrocibernetico.com/audiorama-xhgda
+#EXTINF:-1 tvg-chno="89.5",Radio Formula GDL
+https://stream.radiojar.com/bhd04xcn3p8uv
+#EXTINF:-1 tvg-chno="90.3",Match FM
+https://playerservices.streamtheworld.com/api/livestream-redirect/XEMIAAAC.aac
+#EXTINF:-1 tvg-chno="90.7",Senal 90
+https://s2.yesstreaming.net:17042/stream
+#EXTINF:-1 tvg-chno="93.1",Amor 93.1
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHPIFM.mp3
+#EXTINF:-1 tvg-chno="94.7",KY 94.7
+https://sg.centrocibernetico.com/audiorama-xhdk
+#EXTINF:-1 tvg-chno="95.5",La Mejor GDL
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHRO.mp3
+#EXTINF:-1 tvg-chno="95.9",VOX Radio Hits
+https://streaming.servicioswebmx.com/8272/stream
+#EXTINF:-1 tvg-chno="97.1",Ke Buena GDL
+https://playerservices.streamtheworld.com/api/livestream-redirect/KEBUENA_GDLAAC.aac
+#EXTINF:-1 tvg-chno="97.9",Formula Melodica
+https://s2.yesstreaming.net:9085/stream
+#EXTINF:-1 tvg-chno="98.7",FM Globo GDL
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHLCFM.mp3
+#EXTINF:-1 tvg-chno="101.1",Exa FM GDL
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHMA.mp3
+#EXTINF:-1 tvg-chno="101.9",La Buena Onda
+https://s2.yesstreaming.net:9094/stream
+#EXTINF:-1 tvg-chno="102.7",LOS40 GDL
+https://playerservices.streamtheworld.com/api/livestream-redirect/LOS40_GDLAAC.aac
+#EXTINF:-1 tvg-chno="104.3",Radio UDG
+https://stream.zeno.fm/6mm85mmh6ehvv
+#EXTINF:-1 tvg-chno="107.5",Retro FM GDL
+https://sg.centrocibernetico.com/audiorama-xhvoz
+#EXTINF:-1 tvg-chno="95.1",Radio ITESO
+https://noasrv.caster.fm:10044/live
+#EXTINF:-1 tvg-chno="93.9",Imagen Guadalajara
+https://rigdl.alphamx.net/;stream.mp3
+#EXTINF:-1 tvg-chno="99.9",La Lupe
+https://mdstrm.com/audio/6737875eb61ca2fa731a2891/icecast.audio?property=mmradio
+#EXTINF:-1 tvg-chno="89.9",Magia Digital
+#EXTHEADER:Origin: https://magia899.mx
+https://stream.zeno.fm/zrwy79s91rhvv
+#EXTINF:-1 tvg-chno="105.9",Extasis Digital
+#EXTHEADER:Origin: https://radioramaoccidente.com
+https://stream.zeno.fm/3dnrg7m1qa0uv
+#EXTINF:-1 tvg-chno="106.7",Maxima FM
+#EXTHEADER:Origin: http://www.maxima1067.fm
+https://stream.zeno.fm/ppckgqm1qa0uv
+#EXTINF:-1 tvg-chno="103.5",La Tapatia
+#EXTHEADER:Origin: https://radioramaoccidente.com
+https://stream.zeno.fm/urxmpmn1qa0uv
+#EXTINF:-1 tvg-chno="99.5",Romance FM
+#EXTHEADER:Origin: https://romance995.com
+https://stream.zeno.fm/3avzkdt91rhvv

@@ -21,7 +21,7 @@ Environment="TRANSCRIBER_ENGINE=cohere"
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
 # M3U ampliado a 26 canales (ver transcriber-parakeet.service); TRANSCRIBER_ONLY_CHANNELS
 # abajo sigue acotando este servicio a las mismas 3 noticias de siempre.
-Environment="TRANSCRIBER_MAX_CHANNELS=30"
+Environment="TRANSCRIBER_MAX_CHANNELS=51"
 Environment="TRANSCRIBER_CHUNK_SEC=30"
 # Cohere fuerza idioma=es → 0% code-switching medido en el A/B, a diferencia de
 # Parakeet en estos mismos canales (24-43% EN, ver transcriber-integracion-parakeet).

@@ -115,10 +115,38 @@ def send_heartbeat(channel_id: int, stop_event: threading.Event, interval: int =
         stop_event.wait(interval)
 
 # ── FFmpeg ─────────────────────────────────────────────────────────────────────
-def detect_channels(url: str, logger: logging.Logger) -> int:
+def _header_args(headers: str | None) -> list:
+    """-headers de ffmpeg/ffprobe: crudo, terminado en \\r\\n. Necesario para
+    estaciones detrás de Zeno.fm, que rechazan con 401 sin un Origin/Referer
+    del sitio autorizado (ver #EXTHEADER en manager.py:parse_m3u)."""
+    if not headers:
+        return []
+    return ["-headers", headers.rstrip("\r\n") + "\r\n"]
+
+
+def detect_video(url: str, logger: logging.Logger, headers: str | None = None) -> bool:
+    """True si la fuente trae un stream de video (canales de TV vía TVHeadend) —
+    False para fuentes de solo audio (radio FM por internet). Evita que
+    cc_extractor_thread intente (y falle, en loop cada 3s para siempre) extraer
+    Closed Captions de un stream que nunca tuvo video."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+            ["ffprobe", "-v", "error", *_header_args(headers),
+             "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type",
+             "-of", "default=noprint_wrappers=1:nokey=1", url],
+            capture_output=True, text=True, timeout=15)
+        return result.stdout.strip() == "video"
+    except Exception as e:
+        logger.warning(f"No se pudo detectar video ({e}), asumiendo que sí trae")
+        return True
+
+
+def detect_channels(url: str, logger: logging.Logger, headers: str | None = None) -> int:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", *_header_args(headers),
+             "-select_streams", "a:0",
              "-show_entries", "stream=channels",
              "-of", "default=noprint_wrappers=1:nokey=1", url],
             capture_output=True, text=True, timeout=15)
@@ -129,7 +157,8 @@ def detect_channels(url: str, logger: logging.Logger) -> int:
         logger.warning(f"No se pudo detectar canales ({e}), asumiendo estéreo")
         return 2
 
-def start_ffmpeg(url: str, logger: logging.Logger, channels: int = 2) -> subprocess.Popen:
+def start_ffmpeg(url: str, logger: logging.Logger, channels: int = 2,
+                 headers: str | None = None) -> subprocess.Popen:
     af_filter = ["-af", "pan=mono|c0=FC"] if channels > 2 else ["-ac", "1"]
     # La fuente ahora es un MPEG-TS local (sintonizador), con video+audio del
     # subcanal. Dejamos que ffmpeg detecte el contenedor (sin `-f ac3`),
@@ -140,6 +169,7 @@ def start_ffmpeg(url: str, logger: logging.Logger, channels: int = 2) -> subproc
         "-reconnect_delay_max", "3", "-reconnect_at_eof", "1",
         "-timeout", "8000000",
         "-fflags", "nobuffer", "-flags", "low_delay",
+        *_header_args(headers),
         "-i", url,
         "-vn", "-map", "0:a:0",
         "-acodec", "pcm_s16le", "-ar", str(SAMPLE_RATE),
@@ -281,7 +311,8 @@ def ffmpeg_reader(proc: subprocess.Popen, audio_q: queue.Queue,
             break
 
 # ── Loop principal ─────────────────────────────────────────────────────────────
-def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
+def run_worker(channel_id: int, channel_name: str, url: str, shared_queue,
+               headers: str | None = None):
     logger = setup_logger(channel_id)
     logger.info(f"Worker iniciado | canal={channel_name}")
     init_db()
@@ -292,18 +323,23 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
     hb_thread.start()
 
     # CC-first: hilo que extrae Closed Captions del subcanal. Mientras haya CC
-    # reciente, el loop de audio no manda chunks a Qwen (ahorra ASR).
+    # reciente, el loop de audio no manda chunks a Qwen (ahorra ASR). Solo tiene
+    # sentido si la fuente trae video (TV) — una radio de solo audio nunca va a
+    # tener CC, así que ni se intenta (evita un loop de reintento cada 3s para
+    # siempre por canal, sin ningún beneficio).
     cc_state = {"last": 0.0}
     cc_stop = threading.Event()
-    if CC_ENABLED:
+    if CC_ENABLED and detect_video(url, logger, headers):
         cc_thread = threading.Thread(
             target=cc_extractor_thread,
             args=(channel_id, channel_name, url, cc_state, cc_stop, logger),
             daemon=True)
         cc_thread.start()
         logger.info("CC-first activo (grace=%.0fs)", CC_GRACE_SEC)
+    elif CC_ENABLED:
+        logger.info("Sin stream de video (fuente de solo audio) — CC-first desactivado")
 
-    audio_channels = detect_channels(url, logger)
+    audio_channels = detect_channels(url, logger, headers)
     previous_audio = np.zeros(OVERLAP_SAMPLES, dtype=np.float32)
     reconnect_delay = 2
     max_reconnects  = 999
@@ -313,7 +349,7 @@ def run_worker(channel_id: int, channel_name: str, url: str, shared_queue):
             logger.info(f"Reconectando en {reconnect_delay}s (intento {attempt})...")
             time.sleep(reconnect_delay)
 
-        proc       = start_ffmpeg(url, logger, channels=audio_channels)
+        proc       = start_ffmpeg(url, logger, channels=audio_channels, headers=headers)
         local_q    = queue.Queue(maxsize=0)
         stop_event = threading.Event()
         reader     = threading.Thread(target=ffmpeg_reader,
