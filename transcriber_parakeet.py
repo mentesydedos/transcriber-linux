@@ -32,8 +32,20 @@ BATCH_WAIT_MS     = 150
 FILE_WINDOW_MIN   = 30
 DB_PATH           = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 ALERTS_DB         = Path("alerts.db")
-OUTPUT_DIR        = Path("output")
+# OUTPUT_DIR: canales de TV (id < RADIO_CHANNEL_MIN). OUTPUT_DIR_RADIO: canales
+# de radio FM — por default el mismo que OUTPUT_DIR (compatibilidad), pero se
+# aparta a otra ruta (ej. el NAS) vía env sin tocar código. La base de datos
+# SQLite NUNCA se mueve de disco local (ver TRANSCRIBER_DB) — solo estos
+# archivos .txt/.srt, que cada canal escribe por su cuenta sin compartir
+# archivo con nadie más, así que son seguros en almacenamiento de red.
+OUTPUT_DIR        = Path(os.environ.get("TRANSCRIBER_OUTPUT_DIR", "output"))
+OUTPUT_DIR_RADIO  = Path(os.environ.get("TRANSCRIBER_OUTPUT_DIR_RADIO", str(OUTPUT_DIR)))
+RADIO_CHANNEL_MIN = int(os.environ.get("TRANSCRIBER_RADIO_CHANNEL_MIN", "27"))
 LOG_DIR           = Path("logs")
+
+
+def _output_dir_for(channel_id: int) -> Path:
+    return OUTPUT_DIR_RADIO if channel_id >= RADIO_CHANNEL_MIN else OUTPUT_DIR
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -143,7 +155,7 @@ class FileWindow:
         self.window_start = start
         self.window_end   = end
         self.srt_idx      = 0
-        folder = OUTPUT_DIR / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
+        folder = _output_dir_for(self.channel_id) / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
         folder.mkdir(parents=True, exist_ok=True)
         txt_path = folder / f"{self.base}.txt"
         # Solo escribir el header si el archivo es nuevo: evita duplicarlo cuando

@@ -38,8 +38,16 @@ VAD_THRESHOLD     = float(os.environ.get("TRANSCRIBER_COHERE_VAD_THRESHOLD", "0.
 FILE_WINDOW_MIN   = 30
 DB_PATH           = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 ALERTS_DB         = Path("alerts.db")
-OUTPUT_DIR        = Path("output")
+# Ver misma nota en transcriber_parakeet.py — split TV/radio por env, DB nunca
+# se mueve del disco local.
+OUTPUT_DIR        = Path(os.environ.get("TRANSCRIBER_OUTPUT_DIR", "output"))
+OUTPUT_DIR_RADIO  = Path(os.environ.get("TRANSCRIBER_OUTPUT_DIR_RADIO", str(OUTPUT_DIR)))
+RADIO_CHANNEL_MIN = int(os.environ.get("TRANSCRIBER_RADIO_CHANNEL_MIN", "27"))
 LOG_DIR           = Path("logs")
+
+
+def _output_dir_for(channel_id: int) -> Path:
+    return OUTPUT_DIR_RADIO if channel_id >= RADIO_CHANNEL_MIN else OUTPUT_DIR
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -149,7 +157,7 @@ class FileWindow:
         self.window_start = start
         self.window_end   = end
         self.srt_idx      = 0
-        folder = OUTPUT_DIR / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
+        folder = _output_dir_for(self.channel_id) / (start.strftime("%Y-%m-%d_%H-%M") + end.strftime("_%H-%M"))
         folder.mkdir(parents=True, exist_ok=True)
         txt_path = folder / f"{self.base}.txt"
         # Solo escribir el header si el archivo es nuevo: evita duplicarlo cuando

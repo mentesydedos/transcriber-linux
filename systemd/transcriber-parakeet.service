@@ -24,6 +24,13 @@ Environment="TRANSCRIBER_ENGINE=parakeet"
 Environment="TRANSCRIBER_PARAKEET_BATCH=8"
 # Fuente TVHeadend (misma que usaba Qwen). Cambiar a local.m3u tras el cutover.
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
+# .txt/.srt de transcripción: sin override aquí a propósito -- default local
+# ("output/") en transcriber_parakeet.py. Se intentó separar TV/radio al NAS
+# el 2026-08-06 (TRANSCRIBER_OUTPUT_DIR/_RADIO) pero el NAS resultó tener una
+# falla de hardware -- ver nota igual de larga en
+# systemd/transcriber-video-recorder.service. El soporte para el split queda
+# en el código (transcriber_parakeet.py), listo para reactivarse por env
+# cuando el NAS esté confiable, sin tocar código de nuevo.
 # M3U: 26 canales de TV (TVHeadend) + 25 estaciones de radio FM de la ZMG por
 # streaming directo (agregadas 2026-08-06, posiciones 27-51 del M3U — mismo
 # worker.py, ffmpeg no distingue la fuente). Algunas (Zeno.fm) necesitan un

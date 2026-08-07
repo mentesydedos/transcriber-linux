@@ -1,0 +1,14 @@
+[Unit]
+Description=Retencion automatica de output_video/ - borra los segmentos mas viejos si el disco local baja de CLEANUP_MIN_FREE_GB
+# Creado 2026-08-07 tras quedarnos con el disco 100% lleno (el NAS que iba a
+# ser el repositorio principal resulto no ser confiable -- fallas termicas
+# repetidas). Mientras el NAS no sea confiable, esto es la red de seguridad
+# real en disco local. Ver cleanup_video.py.
+
+[Service]
+Type=oneshot
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="CLEANUP_MIN_FREE_GB=150"
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/cleanup_video.py

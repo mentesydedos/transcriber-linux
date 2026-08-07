@@ -824,6 +824,27 @@ def create_app() -> Flask:
         resp.headers['Cache-Control'] = 'no-store'
         return resp
 
+    @app.route('/radiowall')
+    @login_required
+    def radiowall():
+        from alerts.radiowall import list_radio_stations
+        return render_template('radiowall.html', stations=list_radio_stations())
+
+    @app.route('/radiowall/stream/<int:num>')
+    @login_required
+    def radiowall_stream(num):
+        """Proxy del audio en vivo de una estación — necesario porque algunas
+        (detrás de Zeno.fm) exigen un header Origin que un <audio> del
+        navegador no puede mandar; ver alerts/radiowall.py."""
+        from flask import Response
+        from alerts.radiowall import stream_proxy
+        gen, content_type = stream_proxy(num)
+        if gen is None:
+            return ('', 502)
+        resp = Response(gen, mimetype=content_type)
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
     @app.route('/searches/<int:sid>/edit', methods=['GET', 'POST'])
     @login_required
     def search_edit(sid):

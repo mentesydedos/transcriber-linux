@@ -19,6 +19,9 @@ Environment="HF_HOME=/home/transcriber/transcriber-linux/models"
 Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
 Environment="TRANSCRIBER_ENGINE=cohere"
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
+# .txt/.srt de transcripción: sin override aquí a propósito — ver nota larga
+# en transcriber-parakeet.service (se intentó migrar al NAS, se revirtió por
+# falla de hardware del NAS).
 # M3U ampliado a 26 canales (ver transcriber-parakeet.service); TRANSCRIBER_ONLY_CHANNELS
 # abajo sigue acotando este servicio a las mismas 3 noticias de siempre.
 Environment="TRANSCRIBER_MAX_CHANNELS=51"

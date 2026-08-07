@@ -36,13 +36,21 @@ Environment="TRANSCRIBER_M3U=TV audio.m3u"
 # 18. Se sube a los 26 canales completos para probar si esto ya alcanza.
 Environment="TRANSCRIBER_VIDEO_MAX_CHANNELS=26"
 # Bitrate y NVENC_LIMIT: sin override aqui a proposito -- los defaults viven
-# en video_recorder.py (2026-08-06: HEVC/GPU 820k, libx264/CPU 1100k,
-# NVENC_LIMIT=16 tras el parche nvidia-patch). Un override viejo de
-# BITRATE=1500k/MAXRATE=1800k quedo aqui pisando el default nuevo del codigo
-# -- si se vuelve a necesitar un override, hacerlo a proposito y con fecha.
+# en video_recorder.py (2026-08-06/07: HEVC/GPU 820k, libx264/CPU 1100k,
+# NVENC_LIMIT=8 -- se probo subirlo con el parche nvidia-patch pero causo un
+# choque de VRAM con Parakeet/Cohere al recargar el modelo, ver el comentario
+# en video_recorder.py). Un override viejo de BITRATE=1500k/MAXRATE=1800k
+# quedo aqui pisando el default nuevo del codigo -- si se vuelve a necesitar
+# un override, hacerlo a proposito y con fecha.
 Environment="TRANSCRIBER_VIDEO_HEIGHT=480"
-# Salida: local por ahora (796GB libres). Cambiar a la ruta del NAS cuando este montado,
-# ej. /mnt/nas/transcriber-video, y subir/quitar la retencion en cleanup_video.sh.
+# Salida: disco local. Se intento migrar al NAS Synology (148.201.38.38,
+# carpeta "TV HD" por CIFS, 39TB) el 2026-08-06/07 -- se copio casi todo el
+# historico (output_video/ -> /mnt/nas-tv/output_video/), pero el NAS resulto
+# tener una falla de hardware (se apagaba solo, aparentemente por temperatura)
+# y se cayo repetidamente a media migracion. Se revirtio a disco local con
+# retencion automatica (ver cleanup-video.timer) mientras el NAS no sea
+# confiable. Retomar la migracion una vez resuelto -- la copia ya hecha en el
+# NAS sigue ahi, solo faltaria sincronizar el resto y cambiar esta variable.
 Environment="TRANSCRIBER_VIDEO_DIR=/home/transcriber/transcriber-linux/output_video"
 Environment="TRANSCRIBER_VIDEO_SEGMENT_SEC=1800"
 ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/video_recorder.py
