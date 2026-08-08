@@ -378,11 +378,14 @@
             {{ m.found_at[:19] }}
           </td>
           <td class="text-center" style="vertical-align:middle">
-            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
-                    title="Ver snapshot y video (±10s)"
-                    onclick="openClip({{ s.id }}, {{ m.id }})">
-              <i class="bi bi-camera-video"></i>
-            </button>
+            {% if m.channel_kind == 'tv' %}
+            <img src="/searches/{{ s.id }}/matches/{{ m.id }}/snapshot.jpg" loading="lazy"
+                 class="match-thumb" title="Ver snapshot y video (±10s)"
+                 onclick="openClip({{ s.id }}, {{ m.id }})"
+                 onerror="this.style.visibility='hidden'">
+            {% else %}
+            <i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>
+            {% endif %}
           </td>
           <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle"
               title="{{ m.channel_name }}">
@@ -567,12 +570,13 @@
     const txt      = kwEsc
       ? rawCent.replace(new RegExp(kwRe, 'gi'), s => '<mark>' + s + '</mark>')
       : rawCent;
+    const clipCell = m.channel_kind === 'tv'
+      ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
+      : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
     return `<tr style="animation:fadeIn .4s ease">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
       <td class="text-center" style="vertical-align:middle">
-        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})">
-          <i class="bi bi-camera-video"></i>
-        </button>
+        ${clipCell}
       </td>
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle">${esc(m.channel_name)}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
@@ -658,6 +662,14 @@
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   line-height: 1.35; word-break: break-word;
 }
+/* Miniatura de la coincidencia (frame exacto del canal en ese momento) —
+   reemplaza el ícono de video genérico. */
+.match-thumb {
+  width: 56px; height: 32px; object-fit: cover; border-radius: 5px;
+  cursor: pointer; border: 1px solid var(--border); background: var(--card2);
+  transition: border-color .15s, transform .15s;
+}
+.match-thumb:hover { border-color: var(--green); transform: scale(1.08); }
 </style>
 <script>
 // Actualiza el label del botón de cada dropdown según los checks activos

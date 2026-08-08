@@ -13,9 +13,10 @@ import logging
 from datetime import datetime, date
 from pathlib  import Path
 
-from alerts.mailer   import send_immediate, send_daily_report, send_final_report
-from alerts.telegram import notify_match as tg_notify_match
-from alerts.epg      import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
+from alerts.mailer         import send_immediate, send_daily_report, send_final_report
+from alerts.telegram       import notify_match as tg_notify_match
+from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
+from alerts.channel_types  import channel_type, parse_media_types
 
 logger = logging.getLogger('watcher')
 
@@ -101,9 +102,10 @@ def _process(adb, tdb, smtp, cfg=None):
         "SELECT * FROM searches WHERE initialized=0 AND status='active'"
     ).fetchall()
     for s in new_searches:
-        keywords   = json.loads(s['keywords'])
-        phonetic   = bool(s['phonetic'])
-        whole_word = bool(s['whole_word'])
+        keywords    = json.loads(s['keywords'])
+        phonetic    = bool(s['phonetic'])
+        whole_word  = bool(s['whole_word'])
+        media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
         BATCH   = 2000
 
         # Contar total de registros en el rango para mostrar progreso
@@ -136,6 +138,8 @@ def _process(adb, tdb, smtp, cfg=None):
             for row in hist:
                 text = row['text'] or ''
                 if not text or text == '[~]':
+                    continue
+                if channel_type(row['channel_id']) not in media_types:
                     continue
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
@@ -186,7 +190,11 @@ def _process(adb, tdb, smtp, cfg=None):
             text = row['text'] or ''
             if not text or text == '[~]':
                 continue
+            row_type = channel_type(row['channel_id'])
             for s in active:
+                media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
+                if row_type not in media_types:
+                    continue
                 keywords   = json.loads(s['keywords'])
                 phonetic   = bool(s['phonetic'])
                 whole_word = bool(s['whole_word'])

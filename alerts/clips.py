@@ -143,7 +143,19 @@ def extract_snapshot(channel_name: str, moment: datetime, out_path: Path) -> boo
     if not found:
         return False
     path, offset = found
-    cmd = ["ffmpeg", "-y", "-ss", f"{offset:.2f}", "-i", str(path),
+    # Seek combinado: rápido (input, antes de -i) hasta unos segundos antes
+    # del objetivo + fino (output, después de -i) para el resto. Un solo
+    # -ss de input directo al offset exacto da frames grises/corruptos en
+    # los canales HEVC (1-8, desde 2026-08-06) -- decodificar sin haber
+    # resuelto las referencias B-frame de HEVC. Con margen de FINE_SEEK_SEC
+    # de decode real antes del frame, las referencias ya están resueltas.
+    # Confirmado con prueba real: sin esto, frame gris; con esto, correcto,
+    # y sigue siendo rápido (~0.4s vs ~18s de un -ss de salida puro).
+    FINE_SEEK_SEC = 6.0
+    coarse = max(0.0, offset - FINE_SEEK_SEC)
+    fine   = offset - coarse
+    cmd = ["ffmpeg", "-y", "-ss", f"{coarse:.2f}", "-i", str(path),
+           "-ss", f"{fine:.2f}",
            "-frames:v", "1", "-q:v", "3", str(out_path), "-loglevel", "error"]
     try:
         return subprocess.run(cmd, timeout=15).returncode == 0 and out_path.exists()
@@ -157,9 +169,18 @@ def extract_clip(channel_name: str, moment: datetime, out_path: Path,
     if not pieces:
         return False
 
+    # Mismo seek combinado que extract_snapshot (ver su comentario) — sin
+    # esto, los primeros ~1-2s de clips de canales HEVC (1-8) salen grises.
+    FINE_SEEK_SEC = 6.0
+
+    def _seek_args(path: Path, offset: float) -> list:
+        coarse = max(0.0, offset - FINE_SEEK_SEC)
+        fine   = offset - coarse
+        return ["-ss", f"{coarse:.2f}", "-i", str(path), "-ss", f"{fine:.2f}"]
+
     if len(pieces) == 1:
         path, offset, length = pieces[0]
-        cmd = ["ffmpeg", "-y", "-ss", f"{offset:.2f}", "-i", str(path),
+        cmd = ["ffmpeg", "-y", *_seek_args(path, offset),
                "-t", f"{length:.2f}",
                "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                "-movflags", "+faststart", str(out_path), "-loglevel", "error"]
@@ -174,7 +195,7 @@ def extract_clip(channel_name: str, moment: datetime, out_path: Path,
         parts = []
         for i, (path, offset, length) in enumerate(pieces):
             part = tmp / f"part{i}.ts"
-            cmd = ["ffmpeg", "-y", "-ss", f"{offset:.2f}", "-i", str(path),
+            cmd = ["ffmpeg", "-y", *_seek_args(path, offset),
                    "-t", f"{length:.2f}",
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    str(part), "-loglevel", "error"]

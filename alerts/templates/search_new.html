@@ -74,6 +74,23 @@
         </div>
       </div>
     </div>
+
+    <!-- Medios a monitorear -->
+    <div class="p-3 rounded mt-2" style="background:#070d1a;border:1px solid var(--border)">
+      <div class="fw-semibold mb-2">Medios a monitorear</div>
+      <div class="d-flex gap-4">
+        {% for value, label in media_types_choices %}
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="media_types" value="{{ value }}"
+                 id="mt_{{ value }}" checked>
+          <label class="form-check-label" for="mt_{{ value }}">{{ label }}</label>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="font-size:.78rem;color:var(--text2);margin-top:.4rem">
+        Desmarca uno si solo quieres monitorear ese medio.
+      </div>
+    </div>
   </div>
 
   <!-- Fechas -->

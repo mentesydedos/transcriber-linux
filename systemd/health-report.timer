@@ -1,0 +1,9 @@
+[Unit]
+Description=Corre health-report.service todos los dias a las 2am
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=AlertaTV Watcher - escaneo de coincidencias y envío de alertas (email/telegram)
+After=network-online.target transcriber.service alerts.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Proceso separado del dashboard web a propósito -- Gunicorn (alerts.service)
+# corre 4 workers como procesos independientes; si el watcher viviera ahí
+# cada worker mandaría sus propias alertas duplicadas. Esta es la única
+# copia, corre exactamente una vez sin importar cuántos workers web haya.
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python run_watcher.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 [Unit]
-Description=AlertaTV Dashboard (Flask) - Monitoreo y alertas por email/telegram
+Description=AlertaTV Dashboard (Flask/Gunicorn) - Monitoreo y alertas por email/telegram
 After=network-online.target transcriber.service
 Wants=network-online.target
 
@@ -10,7 +10,15 @@ Group=transcriber
 WorkingDirectory=/home/transcriber/transcriber-linux
 Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/home/transcriber/transcriber-linux/venv/bin/python run_alerts.py --port 5001 --host 0.0.0.0
+# Gunicorn detrás de Nginx (ver nginx/alertatv) -- reemplaza al servidor de
+# desarrollo de Flask para soportar ~20 clientes concurrentes. Escucha solo
+# en localhost:8001; Nginx es el único punto de entrada externo, en el
+# puerto 5001 de siempre. --timeout 0 desactiva el watchdog de Gunicorn a
+# propósito: las rutas de streaming (/videowall/stream/, /radiowall/stream/,
+# /videowall/av/) mantienen la conexión abierta indefinidamente por diseño.
+# El watcher de alertas (correos/Telegram) YA NO corre aquí -- ver
+# alerts-watcher.service (correr en varios workers duplicaría los envíos).
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/gunicorn --workers 4 --threads 6 --bind 127.0.0.1:8001 --timeout 0 wsgi:app
 Restart=always
 RestartSec=5
 StandardOutput=journal

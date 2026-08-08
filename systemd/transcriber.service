@@ -1,5 +1,5 @@
 [Unit]
-Description=Transcriber TV 24x7 (Qwen3-ASR) - Captura y transcripción de 8 canales
+Description=OBSOLETO (2026-08-07, ver transcriber.py) - Transcriber TV 24x7 (Qwen3-ASR) - motor original de 8 canales, reemplazado por transcriber-parakeet.service + transcriber-cohere.service. NO reactivar sin revisar transcriber.py primero.
 After=network-online.target
 Wants=network-online.target
 

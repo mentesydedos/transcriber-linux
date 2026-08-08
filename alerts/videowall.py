@@ -337,7 +337,7 @@ def _produce(
 
 def stream_wall_mjpeg(
     channels: list[dict],
-    fps: int = 5,
+    fps: int = 6,
     tile_w: int = 400,
     tile_h: int = 225,
     cols: int = 6,

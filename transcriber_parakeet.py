@@ -6,10 +6,14 @@ MISMA escritura a BD/archivos (dashboard, búsqueda, RAG y alertas lo consumen i
 Corre bajo venv-parakeet (NeMo). No importa qwen_asr, así que es seguro en ese venv.
 
 Elegido por env TRANSCRIBER_ENGINE=parakeet en manager.py. transcriber.py (Qwen)
-queda intacto como rollback (TRANSCRIBER_ENGINE=qwen, el default).
+se conserva como referencia histórica, no como rollback real — ver la nota de
+obsolescencia en su encabezado antes de considerarlo (quedó atado a 8 canales
+y a la T1000 8GB, hardware ya reemplazado por una RTX 4070 12GB en 2026-08).
 
-Hallazgo que justifica la config (medido sobre TV mexicana real, jul-2026):
-  - Parakeet en chunks de 30s reales → 0% code-switching, ~51x tiempo real en T1000.
+Hallazgo que justifica la config (medido sobre TV mexicana real, jul-2026, en
+la T1000 — hardware de GPU ya reemplazado, pero el hallazgo de contenido
+(code-switching, alucinación) no depende del GPU y sigue vigente):
+  - Parakeet en chunks de 30s reales → 0% code-switching, ~51x tiempo real.
   - Sobre silencio/música NO alucina (RNNT calla), a diferencia de modelos AED.
 """
 import os

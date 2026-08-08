@@ -1,0 +1,145 @@
+{% extends 'base.html' %}
+{% block title %}Salud del sistema — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-1 flex-wrap" style="gap:.75rem">
+  <div>
+    <div class="page-title mb-1">Salud del sistema</div>
+    <p style="color:var(--text2);font-size:.875rem;margin:0">
+      Errores, integridad de transcripción por canal, y estado de red — se guarda un reporte cada día a las 2am.
+    </p>
+  </div>
+  <form method="get" action="" class="d-flex align-items-center gap-2" onsubmit="return false;">
+    <select id="dateSelect" class="form-select form-select-sm" style="width:auto">
+      <option value="{{ date_str }}" selected>{{ date_str }}{% if is_today %} (hoy, en vivo){% endif %}</option>
+      {% for d in dates if d != date_str %}
+      <option value="{{ d }}">{{ d }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+
+<script>
+document.getElementById('dateSelect').addEventListener('change', function () {
+  window.location.href = '/admin/health/' + this.value;
+});
+</script>
+
+{% if is_today %}
+<div class="alert alert-info py-2 px-3 mb-4" style="font-size:.8rem">
+  <i class="bi bi-info-circle me-1"></i> Este es el reporte del día en curso, generado en vivo — aún no se guardó
+  (el guardado definitivo ocurre a las 2am, con el día ya cerrado).
+</div>
+{% endif %}
+
+<!-- Resumen -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:1.6rem;font-weight:700;color:{{ 'var(--red)' if report.errors.total_failure_log > 0 else 'var(--green)' }}">
+        {{ report.errors.total_failure_log }}
+      </div>
+      <div style="font-size:.72rem;color:var(--muted)">fallas registradas</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:1.6rem;font-weight:700;color:var(--green)">{{ report.channels.ok }}</div>
+      <div style="font-size:.72rem;color:var(--muted)">canales OK de {{ report.channels.channels|length }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:1.6rem;font-weight:700;color:{{ 'var(--red)' if report.network.tvheadend.reachable == false else 'var(--green)' }}">
+        {{ 'OK' if report.network.tvheadend.reachable else 'CAÍDO' }}
+      </div>
+      <div style="font-size:.72rem;color:var(--muted)">TVHeadend</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div style="font-size:1.6rem;font-weight:700;color:{{ 'var(--red)' if report.network.nas.reachable == false else 'var(--green)' }}">
+        {{ 'OK' if report.network.nas.reachable else 'CAÍDO' }}
+      </div>
+      <div style="font-size:.72rem;color:var(--muted)">NAS</div>
+    </div>
+  </div>
+</div>
+
+<!-- Causas probables -->
+<div class="card mb-4">
+  <div class="card-header py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-search me-2" style="color:var(--purple)"></i>Causas probables</span>
+  </div>
+  <div class="card-body">
+    <ul class="mb-0" style="font-size:.85rem;padding-left:1.2rem">
+      {% for cause in report.probable_causes %}
+      <li class="mb-1">{{ cause }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<!-- Errores por canal -->
+{% if report.errors.by_channel %}
+<div class="card mb-4">
+  <div class="card-header py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-exclamation-triangle me-2" style="color:var(--amber)"></i>Errores por canal</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead><tr><th>Canal</th><th>Total</th><th>Razones</th></tr></thead>
+      <tbody>
+        {% for ch in report.errors.by_channel %}
+        <tr>
+          <td>{{ '%02d'|format(ch.channel_id) }} — {{ ch.channel_name }}</td>
+          <td>{{ ch.count }}</td>
+          <td style="font-size:.78rem;color:var(--text2)">
+            {% for r in ch.reasons %}{{ r.reason }} ({{ r.n }}){% if not loop.last %}, {% endif %}{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- Integridad de transcripción por canal -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-mic me-2" style="color:var(--purple)"></i>Integridad de transcripción</span>
+    <span class="section-label">{{ report.channels.ok }} ok · {{ report.channels.bajo }} bajo · {{ report.channels.sin_datos }} sin datos</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr><th>#</th><th>Canal</th><th>Tipo</th><th>Transcripciones</th><th>Primera</th><th>Última</th><th>Reinicios</th><th>Estado</th></tr>
+      </thead>
+      <tbody>
+        {% for ch in report.channels.channels %}
+        <tr>
+          <td>{{ '%02d'|format(ch.num) }}</td>
+          <td>{{ ch.name }}</td>
+          <td style="font-size:.75rem;color:var(--muted)">{{ 'TV' if ch.kind == 'tv' else 'Radio' }}</td>
+          <td>{{ ch.transcriptions }}</td>
+          <td style="font-size:.75rem;color:var(--muted)">{{ ch.first_ts or '—' }}</td>
+          <td style="font-size:.75rem;color:var(--muted)">{{ ch.last_ts or '—' }}</td>
+          <td>{{ ch.restart_count if ch.restart_count is not none else '—' }}</td>
+          <td>
+            {% if ch.integrity == 'ok' %}
+              <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">OK</span>
+            {% elif ch.integrity == 'bajo' %}
+              <span class="badge" style="background:rgba(234,179,8,.15);color:var(--amber)">Bajo</span>
+            {% else %}
+              <span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">Sin datos</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

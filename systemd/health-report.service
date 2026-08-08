@@ -1,0 +1,9 @@
+[Unit]
+Description=Genera y guarda el reporte diario de salud del sistema (dia anterior, ya cerrado)
+
+[Service]
+Type=oneshot
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python3 /home/transcriber/transcriber-linux/alerts/health_report.py

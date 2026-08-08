@@ -80,26 +80,32 @@ SKIP_CHANNEL_NAMES = _parse_name_list(os.environ.get("TRANSCRIBER_SKIP_CHANNEL_N
 #     GPU ~5.3× rt, CPU ~1.9× rt → ratio ~2.8:1, redondeado a 2:1 para dejar
 #     al CPU llevar un poco más de carga y bajar utilización del GPU.
 if TRANSCRIBER_ENGINE == "parakeet":
-    # Parakeet-TDT-0.6B ~51× rt en la T1000 → 1 solo worker GPU basta para los
-    # 8 canales con enorme margen. NeMo en CPU sería lento y complejo: no se usa.
+    # Parakeet-TDT-0.6B ~51× rt medido en la T1000 (hardware viejo, reemplazada
+    # por una RTX 4070 en 2026-08) → 1 solo worker GPU basta con enorme margen
+    # incluso para los 48 canales actuales (26 TV + 22 radio de este motor;
+    # los otros 3 canales de radio van por Cohere). En la 4070 el margen es
+    # todavía mayor. NeMo en CPU sería lento y complejo: no se usa.
     INFERENCE_POOL = [
         # (name, device, threads, weight, maxsize)
         ("gpu", "cuda", None, 1, 12),
     ]
 elif TRANSCRIBER_ENGINE == "cohere":
-    # Cohere Transcribe ~15× rt medido en A/B (T1000, más lento que Parakeet por
-    # ser AED 2B vs RNNT 0.6B) — pensado para servir solo 2-3 canales de noticias
-    # (ver TRANSCRIBER_ONLY_CHANNELS), así que 1 worker GPU sobra igual. CPU
-    # inviable: un AED de 2B en CPU sería demasiado lento para tiempo real.
+    # Cohere Transcribe ~15× rt medido en A/B (T1000, hardware viejo — más
+    # lento que Parakeet por ser AED 2B vs RNNT 0.6B) — pensado para servir
+    # solo 3 canales de noticias (TRANSCRIBER_ONLY_CHANNELS), así que 1
+    # worker GPU sobra igual, más aún en la RTX 4070 actual. CPU inviable:
+    # un AED de 2B en CPU sería demasiado lento para tiempo real.
     INFERENCE_POOL = [
         ("gpu", "cuda", None, 1, 12),
     ]
 else:
-    # Config óptima medida para Qwen-0.6B en este hardware (T1000 + i9-14900):
-    # 1 GPU + 1 CPU con 16 hilos → 15.9× rt, 0 drops. Agregar un 2° CPU no ayuda
-    # porque la contención de hilos entre workers reduce el throughput total
-    # (probado: 3 workers = 5.65× rt, peor que 2). La GPU al 98-100% es
-    # esperado y correcto a este throughput.
+    # OBSOLETO (2026-08-07): motor Qwen, reemplazado por Parakeet+Cohere — ver
+    # nota larga al inicio de transcriber.py antes de tocar esto. Config
+    # medida en su momento para Qwen-0.6B en la T1000 8GB + i9-14900 (hardware
+    # de GPU ya reemplazado por una RTX 4070 12GB): 1 GPU + 1 CPU con 16
+    # hilos → 15.9× rt, 0 drops. Agregar un 2° CPU no ayudaba porque la
+    # contención de hilos entre workers reducía el throughput total (probado:
+    # 3 workers = 5.65× rt, peor que 2). Nunca re-medido en la 4070.
     INFERENCE_POOL = [
         ("gpu",    "cuda", None,    2,      12),
         ("cpu-1",  "cpu",  16,      1,      6),

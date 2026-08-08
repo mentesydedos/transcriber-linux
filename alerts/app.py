@@ -123,14 +123,18 @@ def _precise_timestamp(start_ts, idx_word, total_words, chunk_sec=CHUNK_SECONDS)
         return start_ts
 
 def _enrich_match(m, phonetic=False, whole_word=False):
-    """Convierte una Row a dict y agrega: precise_timestamp y centered_text.
-    `m` puede ser sqlite3.Row o dict."""
+    """Convierte una Row a dict y agrega: precise_timestamp, centered_text y
+    channel_kind ('tv'/'radio'/'youtube' — para no mostrar el ícono de video
+    en coincidencias de radio, que nunca tienen clip). `m` puede ser
+    sqlite3.Row o dict."""
+    from alerts.channel_types import channel_type
     md = dict(m)
     text = md.get('matched_text') or ''
     kw   = md.get('keyword') or ''
     idx, total = _locate_keyword(text, kw, phonetic=phonetic, whole_word=whole_word)
     md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx, total)
     md['centered_text']     = _center_text(text, idx, words_each_side=30)
+    md['channel_kind']      = channel_type(md.get('channel_id'))
     return md
 
 def _highlight(text, keyword, phonetic=False, whole_word=False):
@@ -231,6 +235,10 @@ def _init_db():
         ('init_rows_done',   'INTEGER DEFAULT 0'),
         ('init_rows_total',  'INTEGER DEFAULT 0'),
         ('whole_word',       'INTEGER DEFAULT 0'),
+        # 'tv', 'radio', o 'tv,radio' -- qué tipos de canal cubre la búsqueda.
+        # Default incluye todo lo existente al momento de la migración, para
+        # no cambiar el comportamiento de búsquedas ya creadas.
+        ('media_types',      "TEXT DEFAULT 'tv,radio'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -571,6 +579,7 @@ def create_app() -> Flask:
             dmode         = request.form.get('delivery_mode', 'final')
             remail        = request.form.get('report_email', '').strip()
             notify_tg     = 1 if request.form.get('notify_telegram') else 0
+            media_types   = ','.join(request.form.getlist('media_types')) or 'tv,radio'
 
             if not all([name, kw_raw, d_start, d_end]):
                 flash('Nombre, palabras y fechas son obligatorios.', 'danger')
@@ -579,14 +588,16 @@ def create_app() -> Flask:
                 db().execute("""
                     INSERT INTO searches
                       (user_id,name,keywords,phonetic,whole_word,date_start,date_end,
-                       delivery_mode,report_email,status,notify_telegram)
-                    VALUES (?,?,?,?,?,?,?,?,?,'active',?)
+                       delivery_mode,report_email,status,notify_telegram,media_types)
+                    VALUES (?,?,?,?,?,?,?,?,?,'active',?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
-                      phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg))
+                      phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada.', 'success')
                 return redirect(url_for('dashboard'))
-        return render_template('search_new.html', today=date.today().isoformat())
+        from alerts.channel_types import MEDIA_TYPES
+        return render_template('search_new.html', today=date.today().isoformat(),
+                               media_types_choices=MEDIA_TYPES)
 
     def _match_where(sid, kws, chs, pfs, date_from, date_to):
         """Construye WHERE + params para la tabla matches con todos los filtros activos."""
@@ -863,27 +874,29 @@ def create_app() -> Flask:
             new_kws    = json.dumps(kws, ensure_ascii=False)
             new_phon   = 1 if request.form.get('phonetic') else 0
             new_whole  = 1 if request.form.get('whole_word') else 0
+            new_media  = ','.join(request.form.getlist('media_types')) or 'tv,radio'
 
-            # Si cambian fechas, palabras o tipo de búsqueda → re-escanear histórico
+            # Si cambian fechas, palabras, tipo de búsqueda o medios → re-escanear histórico
             needs_reinit = (
                 new_start != s['date_start']  or
                 new_end   != s['date_end']    or
                 new_kws   != s['keywords']    or
                 new_phon  != s['phonetic']    or
-                new_whole != s['whole_word']
+                new_whole != s['whole_word']  or
+                new_media != (s['media_types'] if 'media_types' in s.keys() else 'tv,radio')
             )
 
             db().execute("""
                 UPDATE searches SET
                   name=?, keywords=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
-                  initialized=?
+                  initialized=?, media_types=?
                 WHERE id=?
             """, (name, new_kws, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
-                  0 if needs_reinit else s['initialized'],
+                  0 if needs_reinit else s['initialized'], new_media,
                   sid))
 
             if needs_reinit:
@@ -895,8 +908,12 @@ def create_app() -> Flask:
             db().commit()
             return redirect(url_for('search_detail', sid=sid))
 
+        from alerts.channel_types import MEDIA_TYPES
+        current_media = (s['media_types'] if 'media_types' in s.keys() and s['media_types'] else 'tv,radio').split(',')
         return render_template('search_edit.html', s=s,
-                               keywords=json.loads(s['keywords']))
+                               keywords=json.loads(s['keywords']),
+                               media_types_choices=MEDIA_TYPES,
+                               current_media_types=current_media)
 
     @app.route('/searches/<int:sid>/toggle', methods=['POST'])
     @login_required
@@ -1008,6 +1025,23 @@ def create_app() -> Flask:
             ORDER BY s.created_at DESC
         """).fetchall()
         return render_template('admin.html', users=users, searches=searches)
+
+    @app.route('/admin/health')
+    @admin_required
+    def admin_health():
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+        return redirect(url_for('admin_health_date', date_str=today))
+
+    @app.route('/admin/health/<date_str>')
+    @admin_required
+    def admin_health_date(date_str):
+        from datetime import datetime
+        from alerts.health_report import get_or_generate, list_report_dates
+        today = datetime.now().strftime('%Y-%m-%d')
+        report = get_or_generate(date_str)
+        return render_template('admin_health.html', report=report, date_str=date_str,
+                               is_today=(date_str == today), dates=list_report_dates())
 
     @app.route('/admin/users/<int:uid>/toggle', methods=['POST'])
     @admin_required

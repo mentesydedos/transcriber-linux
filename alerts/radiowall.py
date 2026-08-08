@@ -15,9 +15,10 @@ import requests
 from pathlib import Path
 from typing import Iterator, Optional
 
+from alerts.channel_types import RADIO_CHANNEL_MIN
+
 BASE_DIR          = Path(__file__).parent.parent
 M3U_FILE          = BASE_DIR / "TV audio.m3u"
-RADIO_CHANNEL_MIN = 27
 
 
 def _parse_m3u(filepath: Path) -> list[dict]:

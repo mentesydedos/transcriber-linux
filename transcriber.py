@@ -1,7 +1,21 @@
 """
 transcriber.py — Worker de inferencia Qwen3-ASR-1.7B (GPU o CPU)
 
-Arquitectura:
+OBSOLETO (2026-08-07): este fue el motor ORIGINAL, reemplazado por Parakeet
+(transcriber_parakeet.py) y Cohere (transcriber_cohere.py) — ver
+TRANSCRIBER_ENGINE en manager.py. Se dejó de usar en producción hace tiempo,
+y desde entonces el sistema creció de 8 a 51 canales (26 TV + 25 radio FM)
+con una arquitectura de split entre dos motores que este archivo no conoce.
+GPU_BATCH_SIZE=4 sigue tuneado para la T1000 8GB que ya no está en uso (la
+máquina corre una RTX 4070 12GB desde 2026-08). NO reactivar sin antes:
+  1. Decidir a cuáles de los 51 canales aplicaría (hoy asume "todos").
+  2. Re-tunear GPU_BATCH_SIZE / INFERENCE_POOL para la 4070.
+  3. Revisar que transcriber.service siga siendo compatible con el resto
+     del pipeline (M3U con radio, columnas nuevas en las tablas, etc.)
+Se conserva el código tal cual como referencia histórica, no como rollback
+listo para usarse.
+
+Arquitectura (histórica, como corría con 8 canales en la T1000):
   - Se lanzan N instancias en paralelo (multiprocessing), cada una con su copia
     del modelo. Típico: 1× GPU (batch=4, fp16) + 2× CPU (batch=1, fp32, 8 hilos).
   - Todas leen de una jobs_queue compartida que alimenta el manager vía dispatcher.
