@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block title %}Videoteca — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <div class="page-title">Videoteca</div>
+    <div style="font-size:.82rem;color:var(--text2)">
+      Grabaciones históricas — elige un canal para navegar por fecha, hora o programa
+    </div>
+  </div>
+</div>
+
+<div class="d-flex mb-4" style="gap:.5rem">
+  <span class="btn btn-sm" style="background:var(--green);color:#06240f;border:none;pointer-events:none">
+    <i class="bi bi-tv"></i> Televisión
+  </span>
+  <span class="btn btn-sm btn-outline-secondary" style="opacity:.5;pointer-events:none" title="Radio no graba audio permanente todavía">
+    <i class="bi bi-broadcast"></i> Radio (próximamente)
+  </span>
+</div>
+
+{% if channels %}
+<div class="lib-grid">
+  {% for c in channels %}
+  <a href="/library/{{ c.num }}" class="lib-poster text-decoration-none">
+    <div class="lib-poster-img">
+      <img src="/videowall/thumb/{{ c.num }}.jpg" alt="" loading="lazy"
+           onerror="this.closest('.lib-poster-img').classList.add('lib-noimg')">
+      <div class="lib-poster-fallback"><i class="bi bi-tv"></i></div>
+      <div class="lib-poster-play"><i class="bi bi-play-circle-fill"></i></div>
+    </div>
+    <div class="lib-poster-scrim">
+      <div class="lib-poster-name" title="{{ c.name }}">{{ c.name }}</div>
+      <div class="lib-poster-num">canal_{{ '%02d'|format(c.num) }}</div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+<style>
+  .lib-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 1rem;
+  }
+  .lib-poster {
+    position: relative;
+    display: block;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--card2);
+    border: 1px solid var(--border);
+    aspect-ratio: 16/10;
+    transition: transform .15s, box-shadow .15s, border-color .15s;
+  }
+  .lib-poster:hover {
+    transform: scale(1.035);
+    border-color: var(--green);
+    box-shadow: 0 6px 20px rgba(0,0,0,.35);
+    z-index: 2;
+  }
+  .lib-poster-img { position: absolute; inset: 0; background: #0a0f0c; }
+  .lib-poster-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .lib-poster-img.lib-noimg img { display: none; }
+  .lib-poster-fallback {
+    display: none; align-items: center; justify-content: center;
+    position: absolute; inset: 0; font-size: 2.2rem; color: var(--text2);
+  }
+  .lib-poster-img.lib-noimg .lib-poster-fallback { display: flex; }
+  .lib-poster-play {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 2.4rem; color: #fff; opacity: 0; transition: opacity .15s;
+    background: rgba(0,0,0,.25);
+  }
+  .lib-poster:hover .lib-poster-play { opacity: 1; }
+  .lib-poster-scrim {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: .6rem .7rem .5rem;
+    background: linear-gradient(to top, rgba(0,0,0,.88), rgba(0,0,0,.55) 60%, transparent);
+  }
+  .lib-poster-name {
+    font-size: .82rem; font-weight: 700; color: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .lib-poster-num { font-size: .66rem; color: #cfd8d3; }
+</style>
+{% else %}
+<p style="color:var(--muted)">No hay grabaciones disponibles todavía.</p>
+{% endif %}
+
+{% endblock %}

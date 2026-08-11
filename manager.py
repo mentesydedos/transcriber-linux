@@ -44,6 +44,8 @@ if TRANSCRIBER_ENGINE == "parakeet":
     import transcriber_parakeet as transcriber_mod
 elif TRANSCRIBER_ENGINE == "cohere":
     import transcriber_cohere as transcriber_mod
+elif TRANSCRIBER_ENGINE == "ctc_es":
+    import transcriber_ctc_es as transcriber_mod
 else:
     import transcriber as transcriber_mod
 
@@ -62,6 +64,7 @@ SKIP_CHANNELS     = set()
 
 TRANSCRIBER_MODEL = ("nvidia/parakeet-tdt-0.6b-v3" if TRANSCRIBER_ENGINE == "parakeet"
                      else "CohereLabs/cohere-transcribe-03-2026" if TRANSCRIBER_ENGINE == "cohere"
+                     else "nvidia/parakeet-ctc-riva-0.6b-es-en" if TRANSCRIBER_ENGINE == "ctc_es"
                      else "Qwen/Qwen3-ASR-0.6B")
 
 # Split de motores por canal: dos instancias de manager.py (una por venv/engine)
@@ -98,6 +101,16 @@ elif TRANSCRIBER_ENGINE == "cohere":
     INFERENCE_POOL = [
         ("gpu", "cuda", None, 1, 12),
     ]
+elif TRANSCRIBER_ENGINE == "ctc_es":
+    # Reemplaza a Cohere en los mismos 3 canales de noticias (2026-08-10):
+    # 0% code-switching medido en A/B real (mismo problema que Cohere
+    # resolvía, ver transcriber_ctc_es.py), pero CTC (no autorregresivo) es
+    # mucho más liviano -- 12.5x tiempo real medido en CPU con 4 hilos por
+    # chunk de 30s, de sobra para solo 3 canales. No usa GPU: deja esa VRAM
+    # libre para Parakeet/el resto en vez de competir por ella.
+    INFERENCE_POOL = [
+        ("cpu-1", "cpu", 4, 1, 6),
+    ]
 else:
     # OBSOLETO (2026-08-07): motor Qwen, reemplazado por Parakeet+Cohere — ver
     # nota larga al inicio de transcriber.py antes de tocar esto. Config
@@ -120,7 +133,7 @@ DB_PATH           = os.environ.get("TRANSCRIBER_DB", "transcriptions.db")
 
 LOG_DIR           = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
-STATUS_SUFFIX     = f"-{TRANSCRIBER_ENGINE}" if TRANSCRIBER_ENGINE == "cohere" else ""
+STATUS_SUFFIX     = f"-{TRANSCRIBER_ENGINE}" if TRANSCRIBER_ENGINE in ("cohere", "ctc_es") else ""
 STATUS_FILE       = LOG_DIR / f"status{STATUS_SUFFIX}.json"
 FAILURES_LOG      = LOG_DIR / "failures.log"
 

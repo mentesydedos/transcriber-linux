@@ -273,6 +273,27 @@ def _get_secret_key() -> str:
     return row[0] if row else os.urandom(32).hex()
 
 
+# cache_size/mmap_size más grandes que el default de SQLite (2MB) -- afinado
+# para el dashboard sirviendo hasta ~20 máquinas consultando a la vez detrás
+# de Gunicorn. Solo se aplica en conexiones de LECTURA (dashboard/watcher);
+# los procesos de grabación/transcripción (transcriber_parakeet.py, etc.) no
+# se tocan para no arriesgar la captura 24x7 en vivo.
+_TUNE_PRAGMAS = (
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA cache_size=-64000",
+    "PRAGMA mmap_size=268435456",
+)
+
+
+def _connect_trans_db(timeout: float = 10) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(TRANS_DB), timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for p in _TUNE_PRAGMAS:
+        conn.execute(p)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 def create_app() -> Flask:
     _init_db()
@@ -293,6 +314,8 @@ def create_app() -> Flask:
             g.db = sqlite3.connect(str(ALERTS_DB), timeout=10)
             g.db.row_factory = sqlite3.Row
             g.db.execute("PRAGMA journal_mode=WAL")
+            for p in _TUNE_PRAGMAS:
+                g.db.execute(p)
         return g.db
 
     @app.teardown_appcontext
@@ -525,7 +548,7 @@ def create_app() -> Flask:
         # Canales distintos visibles para el selector
         canales = []
         try:
-            conn = sqlite3.connect(str(TRANS_DB), timeout=2)
+            conn = _connect_trans_db(timeout=2)
             canales = [r[0] for r in conn.execute(
                 "SELECT DISTINCT channel_name FROM transcriptions "
                 "WHERE channel_name IS NOT NULL ORDER BY channel_name").fetchall()]
@@ -855,6 +878,60 @@ def create_app() -> Flask:
         resp = Response(gen, mimetype=content_type)
         resp.headers['Cache-Control'] = 'no-store'
         return resp
+
+    @app.route('/library')
+    @login_required
+    def library():
+        from alerts.library import list_channels
+        return render_template('library.html', channels=list_channels())
+
+    @app.route('/library/<int:num>')
+    @login_required
+    def library_channel(num):
+        from alerts.library import get_channel, list_dates, list_blocks
+        ch = get_channel(num)
+        if ch is None:
+            return ('', 404)
+        dates = list_dates(ch['folder'])
+        date = request.args.get('date') or (dates[0] if dates else None)
+        blocks = list_blocks(ch, date, epg_db=db()) if date else []
+        return render_template('library_channel.html', channel=ch, dates=dates,
+                                date=date, blocks=blocks)
+
+    @app.route('/library/video/<int:num>/<filename>')
+    @login_required
+    def library_video(num, filename):
+        """Sirve (transcodificando y cacheando la primera vez) un bloque de
+        30 min como MP4 reproducible. send_file soporta Range de forma nativa
+        -- permite adelantar/atrasar el video sin volver a descargarlo entero."""
+        from alerts.library import get_channel, get_or_build_clip, _SEG_RE
+        if not _SEG_RE.search(filename) or '/' in filename or '..' in filename:
+            return ('', 400)
+        ch = get_channel(num)
+        if ch is None:
+            return ('', 404)
+        clip = get_or_build_clip(num, ch['folder'], filename)
+        if clip is None:
+            return ('', 404)
+        return send_file(clip, mimetype='video/mp4', conditional=True)
+
+    @app.route('/library/download/<int:num>/<filename>')
+    @login_required
+    def library_download(num, filename):
+        """Descarga el archivo NATIVO del bloque (.mp4 finalizado, o .ts si
+        aún no se ha finalizado) -- sin transcodificar, aunque el canal sea
+        GPU/AV1: los reproductores de escritorio (VLC, etc.) lo reproducen
+        bien aunque el navegador no lo soporte de forma nativa."""
+        from alerts.library import get_channel, _SEG_RE
+        if not _SEG_RE.search(filename) or '/' in filename or '..' in filename:
+            return ('', 400)
+        ch = get_channel(num)
+        if ch is None:
+            return ('', 404)
+        path = ch['folder'] / filename
+        if not path.exists():
+            return ('', 404)
+        return send_file(path, as_attachment=True, download_name=filename)
 
     @app.route('/searches/<int:sid>/edit', methods=['GET', 'POST'])
     @login_required
@@ -1227,9 +1304,7 @@ def create_app() -> Flask:
         _exp_single    = len(search_ids) == 1   # filtros solo para exportación individual
 
         d   = db()
-        tdb = sqlite3.connect(str(TRANS_DB), timeout=10)
-        tdb.row_factory = sqlite3.Row
-        tdb.execute("PRAGMA journal_mode=WAL")
+        tdb = _connect_trans_db()
 
         from alerts.epg import get_programme_at
 

@@ -3,9 +3,12 @@ video_recorder.py — Graba en bloques de 30 min el video de los canales del M3U
 
 Jala el stream CRUDO de TVHeadend (`profile=pass`, sin transcodificar del lado
 del servidor) y comprime LOCALMENTE: canales 1-NVENC_LIMIT con NVENC (GPU) a
-HEVC ~820kb/s + AAC, el resto con libx264 (CPU) a ~1100kb/s + AAC (HEVC por
-CPU se probó y descartado: ~2.5x el costo de libx264 a la misma velocidad,
-inviable a 18 canales concurrentes). Esto le quita toda la carga de
+AV1 ~600kb/s + AAC (hevc_nvenc hasta el 2026-08-10, cambiado a av1_nvenc por
+mejor compresión -- mismo presupuesto de sesiones GPU, ver el plan de esa
+fecha), el resto con libx264 (CPU) a ~1100kb/s + AAC (AV1/HEVC por CPU se
+probaron y descartados para estos canales: sin margen suficiente de tiempo
+real a 18 canales concurrentes, ver SVT-AV1 en el mismo plan). Esto le quita
+toda la carga de
 transcodificación a TVHeadend — su CPU no la soporta de forma confiable (ver
 incidente 2026-08-04: con solo 4 transcodes concurrentes dejó de responder su
 API). El GPU de esta máquina, en cambio, tiene margen de sobra (Parakeet ASR
@@ -54,14 +57,18 @@ CPU_PRESET     = os.environ.get("TRANSCRIBER_VIDEO_CPU_PRESET", "veryfast")
 VIDEO_BITRATE  = os.environ.get("TRANSCRIBER_VIDEO_BITRATE", "1100k")
 VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_MAXRATE", "1300k")
 VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_BUFSIZE", "2200k")
-# HEVC/NVENC (canales <= NVENC_LIMIT): a paridad de calidad visual, HEVC pesa
-# ~40-45% menos que H264 al mismo bitrate — confirmado con hevc_nvenc en esta
-# GPU (el error "incompatible client key" de las primeras pruebas era el tope
-# de 8 sesiones NVENC de GeForce chocando con producción, no una limitación
-# real de HEVC). Sin costo extra de CPU: la GPU sigue hacienda todo el trabajo.
-GPU_VIDEO_BITRATE = os.environ.get("TRANSCRIBER_VIDEO_GPU_BITRATE", "820k")
-GPU_VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_MAXRATE", "984k")
-GPU_VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_BUFSIZE", "1640k")
+# AV1/NVENC (canales <= NVENC_LIMIT): cambiado de hevc_nvenc a av1_nvenc el
+# 2026-08-10 -- esta GPU (RTX 4070, Ada Lovelace) sí tiene encoder de
+# hardware AV1, probado con 10 sesiones simultáneas junto a las 8 de HEVC en
+# vivo + los 2 modelos de IA cargados, sin fallar y liberando VRAM limpio
+# (nvidia-patch ya quitó el límite artificial de sesiones). AV1 comprime
+# mejor que HEVC a paridad de calidad, así que se bajó el bitrate objetivo
+# (820k -> 600k) para capturar esa ganancia -- mismo presupuesto de sesiones
+# GPU que antes (NVENC_LIMIT sin cambios), cero riesgo nuevo de VRAM.
+# Verificar visualmente tras el rollout y ajustar si hace falta.
+GPU_VIDEO_BITRATE = os.environ.get("TRANSCRIBER_VIDEO_GPU_BITRATE", "600k")
+GPU_VIDEO_MAXRATE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_MAXRATE", "720k")
+GPU_VIDEO_BUFSIZE  = os.environ.get("TRANSCRIBER_VIDEO_GPU_BUFSIZE", "1200k")
 VIDEO_HEIGHT   = os.environ.get("TRANSCRIBER_VIDEO_HEIGHT", "480")
 AUDIO_BITRATE  = os.environ.get("TRANSCRIBER_VIDEO_ABITRATE", "96k")
 RESTART_DELAY  = 5
@@ -173,7 +180,14 @@ def channel_recorder(channel_id: int, channel_name: str, url: str):
     safe = _safe_name(channel_name)
     folder = VIDEO_DIR / f"canal_{channel_id:02d}_{safe}"
     folder.mkdir(parents=True, exist_ok=True)
-    pattern = str(folder / f"canal_{channel_id:02d}_{safe}_%Y-%m-%d_%H-%M.ts")
+    # Canales GPU (AV1) graban en .mkv, no .ts -- probado el 2026-08-10:
+    # MPEG-TS NO soporta AV1 de forma legible (lo muxa como "private data",
+    # ffprobe lo lee como bin_data, no como video). Matroska sí soporta AV1
+    # correctamente Y sigue siendo compatible con el `-sseof` que usa
+    # videowall.py para leer el segmento activo en vivo (probado). Canales
+    # CPU (H264) se quedan en .ts como siempre -- MPEG-TS lo soporta bien.
+    ext = "mkv" if channel_id <= NVENC_LIMIT else "ts"
+    pattern = str(folder / f"canal_{channel_id:02d}_{safe}_%Y-%m-%d_%H-%M.{ext}")
     raw_url = _raw_url(url)
 
     # scale=iw*sar:ih,setsar=1 corrige el SAR no-cuadrado de la fuente (704x480,
@@ -183,7 +197,7 @@ def channel_recorder(channel_id: int, channel_name: str, url: str):
           f"scale=-2:{VIDEO_HEIGHT}")
 
     if channel_id <= NVENC_LIMIT:
-        vcodec_args = ["-c:v", "hevc_nvenc", "-preset", "p4",
+        vcodec_args = ["-c:v", "av1_nvenc", "-preset", "p4",
                        "-b:v", GPU_VIDEO_BITRATE, "-maxrate", GPU_VIDEO_MAXRATE, "-bufsize", GPU_VIDEO_BUFSIZE]
     else:
         vcodec_args = ["-c:v", "libx264", "-preset", CPU_PRESET,

@@ -22,7 +22,7 @@ from pathlib import Path
 
 VIDEO_DIR   = Path(os.environ.get("TRANSCRIBER_VIDEO_DIR", "/home/transcriber/transcriber-linux/output_video"))
 MIN_FREE_GB = float(os.environ.get("CLEANUP_MIN_FREE_GB", "150"))
-_NAME_RE    = re.compile(r"_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.ts$")
+_NAME_RE    = re.compile(r"_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.(?:ts|mp4|mkv)$")
 
 
 def _sort_key(path: Path):
@@ -49,7 +49,11 @@ def main():
         print("Ya hay margen suficiente, no se borra nada.")
         return
 
-    segments = sorted(VIDEO_DIR.glob("canal_*/*.ts"), key=_sort_key)
+    segments = sorted(
+        [*VIDEO_DIR.glob("canal_*/*.ts"), *VIDEO_DIR.glob("canal_*/*.mp4"),
+         *VIDEO_DIR.glob("canal_*/*.mkv")],
+        key=_sort_key,
+    )
     freed = 0.0
     deleted = 0
     for seg in segments:

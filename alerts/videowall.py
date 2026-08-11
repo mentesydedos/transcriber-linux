@@ -2,14 +2,14 @@
 alerts/videowall.py — Miniaturas casi en vivo de los canales grabados, para el
 monitor de señales del dashboard AlertaTV.
 
-IMPORTANTE: esto lee EXCLUSIVAMENTE los archivos .ts locales que
+IMPORTANTE: esto lee EXCLUSIVAMENTE los archivos .ts/.mkv locales que
 video_recorder.py ya está escribiendo en output_video/ — nunca abre una
 conexión nueva a TVHeadend. La corrupción de video resuelta hoy (concurrencia
 de conexiones contra TVHeadend) es justo lo que este módulo debe evitar
 reintroducir.
 
 Técnica: `-sseof -8` busca por posición cercana al FINAL del archivo (barato,
-no decodifica desde el inicio de un .ts de 30 min), tomando el frame más
+no decodifica desde el inicio de un bloque de 30 min), tomando el frame más
 reciente disponible del archivo que el recorder tiene abierto ahora mismo.
 """
 import io
@@ -58,10 +58,13 @@ def list_channels() -> list[dict]:
 
 
 def _latest_segment(folder: Path) -> Path | None:
-    """El .ts con mayor mtime — el que el recorder tiene abierto ahora mismo.
-    Por mtime y no por nombre: robusto ante reconexiones que generan nombres
-    fuera de orden cronológico."""
-    segments = list(folder.glob("*.ts"))
+    """El .ts/.mkv con mayor mtime — el que el recorder tiene abierto ahora
+    mismo. Por mtime y no por nombre: robusto ante reconexiones que generan
+    nombres fuera de orden cronológico. .mkv: canales GPU/AV1 (ver
+    video_recorder.py -- MPEG-TS no soporta AV1 de forma legible, así que
+    esos canales graban en Matroska en vez de .ts; -sseof funciona igual de
+    bien contra un .mkv en escritura activa, probado). .ts: canales CPU/H264."""
+    segments = [*folder.glob("*.ts"), *folder.glob("*.mkv")]
     if not segments:
         return None
     return max(segments, key=lambda p: p.stat().st_mtime)

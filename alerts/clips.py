@@ -20,7 +20,7 @@ VIDEO_DIR = BASE_DIR / 'output_video'
 CACHE_DIR = BASE_DIR / 'alerts' / 'cache' / 'clips'
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-_FILENAME_RE = re.compile(r'_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.ts$')
+_FILENAME_RE = re.compile(r'_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.(?:ts|mp4|mkv)$')
 
 
 def _safe_name(name: str) -> str:
@@ -48,8 +48,11 @@ def _segment_start(path: Path):
 
 
 def _list_segments(folder: Path) -> list[tuple[datetime, Path]]:
+    # .mp4 (finalize_video.py) y .ts/.mkv (bloque activo, o historial de
+    # antes de ese cambio) pueden convivir en la misma carpeta -- ver el
+    # plan de "mejor compresión + MP4 descargable" (2026-08-10).
     segs = []
-    for p in folder.glob("*.ts"):
+    for p in (*folder.glob("*.ts"), *folder.glob("*.mp4"), *folder.glob("*.mkv")):
         dt = _segment_start(p)
         if dt:
             segs.append((dt, p))

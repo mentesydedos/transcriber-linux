@@ -1,0 +1,43 @@
+[Unit]
+Description=Transcriber TV 24x7 (Parakeet-CTC-ES, ONNX/CPU) - Canales de noticias con idioma forzado
+After=network-online.target
+Wants=network-online.target
+# No correr junto con el servicio Qwen (motor completo, 8 canales): duplicaria trabajo.
+# SI puede correr junto con transcriber-parakeet.service: cada uno cubre canales distintos.
+Conflicts=transcriber.service transcriber-cohere.service
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+# venv-parakeet (no venv-cohere): este motor usa NeMo solo para el
+# preprocesador (mel-spectrograma) + onnxruntime para el grafo -- ambos ya
+# instalados ahí, no hace falta un venv aparte.
+Environment="PATH=/home/transcriber/transcriber-linux/venv-parakeet/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="TRANSCRIBER_ENGINE=ctc_es"
+Environment="TRANSCRIBER_M3U=TV audio.m3u"
+Environment="TRANSCRIBER_MAX_CHANNELS=51"
+Environment="TRANSCRIBER_CHUNK_SEC=30"
+# Reemplaza a Cohere en estos mismos 3 canales (2026-08-10): 0%
+# code-switching medido en A/B real contra los mismos audios problemáticos,
+# CTC (no autorregresivo) es mucho más liviano que el AED de Cohere -- ver
+# transcriber_ctc_es.py. Ajustar esta lista si cambia qué canales derivan
+# a otro idioma.
+Environment="TRANSCRIBER_ONLY_CHANNELS=ADN 40,N+,Canal 4"
+# CPU con enorme margen para 3 canales (12.5x tiempo real medido, 4 hilos
+# por chunk de 30s) -- no usa GPU, deja esa VRAM libre para Parakeet/AV1.
+Environment="TRANSCRIBER_CTC_ES_THREADS=4"
+ExecStart=/home/transcriber/transcriber-linux/venv-parakeet/bin/python manager.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

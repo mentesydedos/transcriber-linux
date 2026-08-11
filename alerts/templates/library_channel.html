@@ -1,0 +1,108 @@
+{% extends 'base.html' %}
+{% block title %}{{ channel.name }} — Videoteca — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center mb-3" style="gap:.75rem">
+  <a href="/library" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i></a>
+  <div>
+    <div class="page-title" style="margin-bottom:0">{{ channel.name }}</div>
+    <div style="font-size:.78rem;color:var(--text2)">canal_{{ '%02d'|format(channel.num) }} · bloques de 30 min</div>
+  </div>
+</div>
+
+<div class="card mb-4" style="padding:1rem;background:#000;border-color:var(--border)">
+  <video id="libPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:6px"></video>
+  <div id="libStatus" style="font-size:.78rem;color:var(--text2);margin-top:.5rem;display:none">
+    <i class="bi bi-hourglass-split"></i> Preparando video… la primera vez puede tardar unos minutos (se transcodifica una sola vez y queda en caché).
+  </div>
+  <div id="libNowPlaying" style="font-size:.85rem;color:var(--text);margin-top:.5rem;font-weight:600"></div>
+</div>
+
+{% if dates %}
+<div class="mb-3" style="overflow-x:auto;white-space:nowrap;padding-bottom:.25rem">
+  {% for d in dates %}
+  <a class="btn btn-sm {% if d==date %}btn-lib-active{% else %}btn-outline-secondary{% endif %} me-2"
+     href="/library/{{ channel.num }}?date={{ d }}">{{ d }}</a>
+  {% endfor %}
+</div>
+
+{% set titles = blocks | map(attribute='title') | select | unique | sort %}
+<select id="libFilter" class="form-select form-select-sm mb-3" style="max-width:360px">
+  <option value="">Todos los programas</option>
+  {% for t in titles %}
+  <option value="{{ t }}">{{ t }}</option>
+  {% endfor %}
+  <option value="__sin_epg__">Sin datos EPG</option>
+</select>
+
+{% if blocks %}
+<div id="libBlocks" class="d-flex flex-column" style="gap:.4rem">
+  {% for b in blocks %}
+  <div class="card lib-block" data-title="{{ b.title or '__sin_epg__' }}"
+       data-file="{{ b.file }}" style="cursor:pointer;padding:.6rem .9rem">
+    <div class="d-flex align-items-center" style="gap:.75rem">
+      <div style="font-weight:700;color:var(--green);min-width:52px">{{ b.time }}</div>
+      <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">
+        {% if b.title %}{{ b.title }}{% else %}<span style="color:var(--muted)">Sin datos EPG</span>{% endif %}
+      </div>
+      <a href="/library/download/{{ channel.num }}/{{ b.file }}" download
+         class="btn btn-sm btn-outline-secondary" style="padding:.1rem .5rem"
+         title="Descargar" onclick="event.stopPropagation()">
+        <i class="bi bi-download"></i>
+      </a>
+      <i class="bi bi-play-circle" style="color:var(--text2)"></i>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--muted)">No hay bloques grabados para esta fecha.</p>
+{% endif %}
+{% else %}
+<p style="color:var(--muted)">No hay grabaciones disponibles para este canal.</p>
+{% endif %}
+
+<style>
+  .btn-lib-active { background: var(--green); color:#06240f; border:none; }
+  .lib-block { background: var(--card2); border-color: var(--border); transition: border-color .15s; }
+  .lib-block:hover { border-color: var(--green); }
+  .lib-block.playing { border-color: var(--green); background: rgba(34,197,94,.12); }
+</style>
+
+<script>
+(function () {
+  const player  = document.getElementById('libPlayer');
+  const status  = document.getElementById('libStatus');
+  const nowPlay = document.getElementById('libNowPlaying');
+  const filter  = document.getElementById('libFilter');
+  const numero  = {{ channel.num }};
+  let current   = null;
+
+  document.querySelectorAll('.lib-block').forEach(function (row) {
+    row.addEventListener('click', function () {
+      if (current) current.classList.remove('playing');
+      current = row;
+      row.classList.add('playing');
+      status.style.display = '';
+      nowPlay.textContent = row.querySelector('div[style*="flex:1"]').textContent.trim();
+      player.src = '/library/video/' + numero + '/' + encodeURIComponent(row.dataset.file);
+      player.load();
+      player.play().catch(function () {});
+    });
+  });
+  player.addEventListener('canplay', function () { status.style.display = 'none'; });
+  player.addEventListener('waiting', function () { status.style.display = ''; });
+  player.addEventListener('playing', function () { status.style.display = 'none'; });
+
+  if (filter) {
+    filter.addEventListener('change', function () {
+      const q = filter.value;
+      document.querySelectorAll('.lib-block').forEach(function (row) {
+        row.style.display = !q || row.dataset.title === q ? '' : 'none';
+      });
+    });
+  }
+})();
+</script>
+
+{% endblock %}

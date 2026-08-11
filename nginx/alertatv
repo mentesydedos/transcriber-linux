@@ -37,6 +37,19 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    # Videoteca: la primera vez que se pide un bloque hay que transcodificarlo
+    # (hasta unos minutos en canales HEVC) antes de poder responder -- sin
+    # esto Nginx corta la conexión a los 60s (default) y el navegador ve un
+    # error justo cuando el video ya casi estaba listo.
+    location /library/video/ {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_read_timeout 1200s;
+        proxy_send_timeout 1200s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     # Resto del dashboard: timeouts normales.
     location / {
         proxy_pass http://127.0.0.1:8001;

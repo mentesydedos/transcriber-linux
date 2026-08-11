@@ -32,9 +32,18 @@ CREATE TABLE IF NOT EXISTS health_reports (
 """
 
 
+_TUNE_PRAGMAS = (
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA cache_size=-64000",
+    "PRAGMA mmap_size=268435456",
+)
+
+
 def _alerts_conn():
     conn = sqlite3.connect(str(ALERTS_DB), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
+    for p in _TUNE_PRAGMAS:
+        conn.execute(p)
     conn.executescript(_SCHEMA)
     return conn
 
@@ -42,6 +51,9 @@ def _alerts_conn():
 def _trans_conn():
     conn = sqlite3.connect(str(TRANS_DB), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    for p in _TUNE_PRAGMAS:
+        conn.execute(p)
     return conn
 
 

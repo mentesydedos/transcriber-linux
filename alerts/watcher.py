@@ -61,16 +61,29 @@ def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) ->
 
 
 # ── Conexiones ────────────────────────────────────────────────────────────────
+# cache_size/mmap_size más grandes que el default -- el watcher escanea
+# transcriptions.db en un loop constante (POLL_INTERVAL), y ahora compite con
+# hasta 20 clientes del dashboard por el mismo archivo.
+_TUNE_PRAGMAS = (
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA cache_size=-64000",
+    "PRAGMA mmap_size=268435456",
+)
+
 def _adb():
     c = sqlite3.connect(str(ALERTS_DB), timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    for p in _TUNE_PRAGMAS:
+        c.execute(p)
     return c
 
 def _tdb():
     c = sqlite3.connect(str(TRANS_DB), timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    for p in _TUNE_PRAGMAS:
+        c.execute(p)
     return c
 
 

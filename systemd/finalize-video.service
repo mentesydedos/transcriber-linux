@@ -1,0 +1,17 @@
+[Unit]
+Description=Finaliza bloques de output_video/ ya cerrados a MP4 (faststart, remux sin recodificar)
+# Ver finalize_video.py y el plan de "mejor compresion + MP4 descargable"
+# (2026-08-10) -- separa "grabar" (sigue en .ts, sin tocar) de "archivar"
+# (se convierte a .mp4 ya cerrado el bloque, para servirlo sin procesar en
+# la Videoteca y permitir descarga).
+
+[Service]
+Type=oneshot
+# Sin límite -- la primera corrida procesa todo el historial acumulado
+# (miles de bloques) y puede tardar bastante más que el default de
+# systemd (90s). Corridas posteriores son incrementales y rápidas.
+TimeoutStartSec=0
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/finalize_video.py
