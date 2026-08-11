@@ -831,16 +831,20 @@ def create_app() -> Flask:
     @app.route('/videowall/av/<int:num>')
     @login_required
     def videowall_av(num):
-        """Video+audio real (MP4 fragmentado h264/aac) de UN canal — para la
-        vista ampliada, consumido por un <video> nativo del navegador. Solo
-        tiene sentido para un canal a la vez (no el mosaico completo)."""
+        """Video+audio EN VIVO (MP4 fragmentado h264/aac, conectado directo a
+        TVHeadend) de UN canal — para la vista ampliada, consumido por un
+        <video> nativo del navegador. Solo un canal a la vez (no el mosaico
+        completo, que sigue leyendo de la grabación local -- ver el
+        docstring de alerts/videowall.py)."""
         from flask import Response
-        from alerts.videowall import list_channels, stream_av
+        from alerts.videowall import list_channels, stream_live_av
         ch = next((c for c in list_channels() if c['num'] == num), None)
         if ch is None:
             return ('', 404)
-        width = request.args.get('w', 720, type=int)
-        resp = Response(stream_av(ch['folder'], width=width), mimetype='video/mp4')
+        # Sin default: resolución completa (la fuente cruda de TVHeadend es
+        # 1080p) salvo que se pida explícitamente un ancho menor por query param.
+        width = request.args.get('w', type=int)
+        resp = Response(stream_live_av(num, width=width), mimetype='video/mp4')
         resp.headers['Cache-Control'] = 'no-store'
         return resp
 

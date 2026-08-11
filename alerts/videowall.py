@@ -2,15 +2,25 @@
 alerts/videowall.py — Miniaturas casi en vivo de los canales grabados, para el
 monitor de señales del dashboard AlertaTV.
 
-IMPORTANTE: esto lee EXCLUSIVAMENTE los archivos .ts/.mkv locales que
-video_recorder.py ya está escribiendo en output_video/ — nunca abre una
-conexión nueva a TVHeadend. La corrupción de video resuelta hoy (concurrencia
-de conexiones contra TVHeadend) es justo lo que este módulo debe evitar
-reintroducir.
+El MOSAICO (todos los canales a la vez) lee EXCLUSIVAMENTE los archivos
+.ts/.mkv locales que video_recorder.py ya está escribiendo en output_video/
+— nunca abre una conexión nueva a TVHeadend. La corrupción de video resuelta
+antes (concurrencia de conexiones contra TVHeadend) es justo lo que el
+mosaico debe evitar reintroducir: 26 conexiones en vivo simultáneas
+reproducirían ese mismo riesgo.
 
-Técnica: `-sseof -8` busca por posición cercana al FINAL del archivo (barato,
-no decodifica desde el inicio de un bloque de 30 min), tomando el frame más
-reciente disponible del archivo que el recorder tiene abierto ahora mismo.
+Técnica del mosaico: `-sseof -8` busca por posición cercana al FINAL del
+archivo (barato, no decodifica desde el inicio de un bloque de 30 min),
+tomando el frame más reciente disponible del archivo que el recorder tiene
+abierto ahora mismo. En `.mkv` (canales GPU/AV1) esto no es posible -- ver
+`_seek_args()`.
+
+La VISTA INDIVIDUAL (un canal a la vez, al hacer clic) SÍ conecta en vivo
+directo a TVHeadend (`stream_live_av`) -- decisión explícita (2026-08-10):
+el rezago de leer el archivo grabado no es aceptable para monitorear un
+canal de cerca, y a diferencia del mosaico, nunca hay más de una conexión
+nueva a la vez (una por cada pestaña que alguien tenga abierta viendo un
+canal en detalle), un riesgo mucho más acotado que las 26 del mosaico.
 """
 import io
 import math
@@ -29,10 +39,35 @@ BASE_DIR  = Path(__file__).parent.parent
 VIDEO_DIR = BASE_DIR / 'output_video'
 CACHE_DIR = BASE_DIR / 'alerts' / 'cache' / 'videowall'
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+M3U_PATH  = BASE_DIR / 'TV audio.m3u'
 
 _FOLDER_RE = re.compile(r'^canal_(\d+)_(.+)$')
 
 _locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
+
+
+def _seek_args(segment: Path, back_sec: float = 8.0) -> list[str]:
+    """Argumentos de ffmpeg para posicionarse cerca del final de `segment`
+    mientras el recorder lo sigue escribiendo. Solo aplica a `.ts`
+    (MPEG-TS): `-sseof` no necesita conocer la duración total para buscar
+    desde el final, así que es barato y confiable ahí.
+
+    `.mkv` (canales GPU/AV1, ver video_recorder.py) NO soporta ningún tipo
+    de seek fiable mientras está abierto -- probado el 2026-08-10:
+    `-sseof` falla directo ("Cannot use -sseof, file duration not known";
+    ni siquiera ffprobe puede calcular la duración, confirmando que no hay
+    índice/Cues todavía). Probé además calcular un offset por reloj y usar
+    `-ss` normal (sin depender de la duración): funcionaba a veces pero
+    fallaba sin avisar en otras (offsets grandes → "Output file is empty,
+    nothing was encoded") -- Matroska sin índice a veces solo permite un
+    escaneo lineal desde el inicio, no una búsqueda real, así que no es
+    confiable. Por eso aquí se devuelve sin argumentos: `_spawn_follow`
+    arranca desde el inicio del archivo con `-re`, sin reintentos ni
+    reinicios (ver su docstring) -- estable aunque tarde en alcanzar lo
+    actual si se abre a media grabación del bloque de 30 min."""
+    if segment.suffix == '.ts':
+        return ["-sseof", f"-{back_sec:g}"]
+    return []
 
 
 def list_channels() -> list[dict]:
@@ -62,8 +97,8 @@ def _latest_segment(folder: Path) -> Path | None:
     mismo. Por mtime y no por nombre: robusto ante reconexiones que generan
     nombres fuera de orden cronológico. .mkv: canales GPU/AV1 (ver
     video_recorder.py -- MPEG-TS no soporta AV1 de forma legible, así que
-    esos canales graban en Matroska en vez de .ts; -sseof funciona igual de
-    bien contra un .mkv en escritura activa, probado). .ts: canales CPU/H264."""
+    esos canales graban en Matroska en vez de .ts; el seek en vivo contra
+    .mkv necesita _seek_args(), ver su docstring). .ts: canales CPU/H264."""
     segments = [*folder.glob("*.ts"), *folder.glob("*.mkv")]
     if not segments:
         return None
@@ -75,7 +110,7 @@ def _extract_live_frame(path: Path, out_tmp: Path) -> bool:
     # en get_thumbnail), y ffmpeg no puede inferir el formato de salida de esa
     # extensión.
     cmd = [
-        "ffmpeg", "-y", "-sseof", "-8", "-i", str(path),
+        "ffmpeg", "-y", *_seek_args(path), "-i", str(path),
         "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
         "-update", "1", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5",
         "-f", "mjpeg", str(out_tmp), "-loglevel", "error",
@@ -152,10 +187,10 @@ def _spawn_follow(segment: Path, fps: int, width: int) -> subprocess.Popen:
     # según video_recorder.py lo va escribiendo (confirmado: con -re, ffmpeg
     # tolera un archivo que crece y sigue produciendo frames en vez de cerrar
     # en el EOF momentáneo — es justo el comportamiento "tail -f" que
-    # queremos aquí). -sseof -8 solo se usa al arrancar, para no decodificar
-    # desde el inicio del segmento de 30 min.
+    # queremos aquí). El seek (_seek_args) solo se usa al arrancar, para no
+    # decodificar desde el inicio del segmento de 30 min.
     cmd = [
-        "ffmpeg", "-re", "-sseof", "-8", "-i", str(segment),
+        "ffmpeg", "-re", *_seek_args(segment), "-i", str(segment),
         "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
         # fps antes que scale: se descartan los frames sobrantes ANTES de
         # reescalar, así solo se reescalan los frames que de verdad se usan.
@@ -239,18 +274,66 @@ def _burst_frames(folder: Path, fps: int, width: int) -> Iterator[bytes]:
         _kill_proc(proc)
 
 
-def _spawn_follow_av(segment: Path, width: int) -> subprocess.Popen:
-    """Como `_spawn_follow` pero codifica video+audio reales (h264+aac) en
-    vez de frames MJPEG sueltos — solo tiene sentido para UN canal a la vez
-    (la vista ampliada), no para los 26 del mosaico: aquí sí vale la pena un
-    encode real, da mejor calidad por bit que MJPEG y trae audio."""
+def _m3u_channel_url(num: int) -> tuple[str, str | None] | None:
+    """URL (y header opcional, ver #EXTHEADER) del canal `num` (1-indexado)
+    tal como aparece en el M3U -- misma fuente que usa video_recorder.py
+    para grabar. Parseo mínimo duplicado a propósito, mismo motivo que
+    alerts/radiowall.py y alerts/library.py: no importar manager.py."""
+    try:
+        with open(M3U_PATH, "r", encoding="utf-8", errors="replace") as f:
+            i = 0
+            headers = None
+            for line in f:
+                line = line.strip()
+                if line.startswith("#EXTINF"):
+                    i += 1
+                    headers = None
+                elif line.startswith("#EXTHEADER:"):
+                    headers = line[len("#EXTHEADER:"):].strip()
+                elif line and not line.startswith("#"):
+                    if i == num:
+                        return line, headers
+    except OSError:
+        return None
+    return None
+
+
+def _raw_url(url: str) -> str:
+    """Mismo stream crudo (sin transcodificar en TVHeadend) que usa
+    video_recorder.py -- la compresión la hace esta máquina, no TVHeadend."""
+    return f"{url.split('?', 1)[0]}?profile=pass"
+
+
+def _spawn_live_av(url: str, width: int | None) -> subprocess.Popen:
+    """Como el antiguo `_spawn_follow_av` pero conectado EN VIVO a TVHeadend
+    en vez de seguir un archivo local -- ver el docstring del módulo. Sin
+    -re (la fuente ya es un stream en tiempo real, no hay que pausarse) ni
+    seek (no hay archivo/segmento del que posicionarse).
+
+    Sin downscale por default (`width=None`): la grabación 24/7 sí reduce a
+    480p a propósito (26 canales simultáneos, ahorro de espacio), pero esta
+    vista individual es UNA sola conexión bajo demanda, así que no hay razón
+    para no dar la resolución completa que entregue cada canal.
+
+    `-crf` (calidad constante) en vez de un `-b:v` fijo -- no todos los
+    canales transmiten a la misma resolución (confirmado 2026-08-10: mezcla
+    de 1080p y 480p). Con CRF, libx264 ya usa solo el bitrate que hace falta
+    para la calidad pedida según resolución/complejidad real de cada canal,
+    sin necesitar sondear la resolución de antemano (probé eso primero:
+    agregaba una segunda conexión a TVHeadend solo para preguntar, sumando
+    varios segundos más de espera antes de empezar a ver algo)."""
+    vf = [] if not width else ["-vf", f"scale={width}:-2"]
     cmd = [
-        "ffmpeg", "-re", "-sseof", "-8", "-i", str(segment),
+        "ffmpeg", "-nostdin",
+        "-reconnect", "1", "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5", "-reconnect_at_eof", "1", "-timeout", "8000000",
         "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+        "-i", _raw_url(url),
         "-map", "0:v:0", "-map", "0:a:0?",
-        "-vf", f"scale={width}:-2",
-        "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", "1200k",
-        "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+        *vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+        "-crf", "20", "-maxrate", "6000k", "-bufsize", "10000k",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
         "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-frag_duration", "500000",
         "pipe:1", "-loglevel", "error",
@@ -258,43 +341,29 @@ def _spawn_follow_av(segment: Path, width: int) -> subprocess.Popen:
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def stream_av(folder: Path, width: int = 720) -> Iterator[bytes]:
-    """Generador de bytes MP4 fragmentado (video+audio) de UN canal, para la
-    vista ampliada — un `<video>` nativo del navegador lo consume
-    directamente como stream progresivo. Mismo patrón de proceso persistente
-    + `select` + rotación de segmento que `_burst_frames`, pero sin envoltura
-    multipart: es un solo bytestream MP4 continuo."""
-    segment = _latest_segment(folder)
-    while segment is None:
-        time.sleep(1.0)
-        segment = _latest_segment(folder)
-    proc = _spawn_follow_av(segment, width)
-    next_rotation_check = time.time() + 15
+def stream_live_av(num: int, width: int | None = None) -> Iterator[bytes]:
+    """Generador de bytes MP4 fragmentado (video+audio) EN VIVO de UN canal,
+    conectado directo a TVHeadend -- para la vista ampliada (clic en un
+    canal del mosaico). A diferencia del mosaico (26 conexiones sería el
+    mismo riesgo que causó el incidente de corrupción ya resuelto antes),
+    esto nunca abre más de una conexión nueva a la vez por pestaña abierta.
+    Un `<video>` nativo del navegador lo consume directamente como stream
+    progresivo."""
+    found = _m3u_channel_url(num)
+    if found is None:
+        return
+    url, _headers = found
+    proc = _spawn_live_av(url, width)
     try:
         while True:
             ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-
-            now = time.time()
-            if now >= next_rotation_check:
-                next_rotation_check = now + 15
-                latest = _latest_segment(folder)
-                if latest is not None and latest != segment:
-                    _kill_proc(proc)
-                    segment = latest
-                    proc = _spawn_follow_av(segment, width)
-                    continue
-
             if not ready:
                 if proc.poll() is not None:
-                    segment = _latest_segment(folder) or segment
-                    proc = _spawn_follow_av(segment, width)
+                    proc = _spawn_live_av(url, width)
                 continue
-
             chunk = proc.stdout.read(65536)
             if not chunk:
-                # EOF real (ver comentario en _burst_frames) — reabrir ya.
-                segment = _latest_segment(folder) or segment
-                proc = _spawn_follow_av(segment, width)
+                proc = _spawn_live_av(url, width)
                 continue
             yield chunk
     finally:

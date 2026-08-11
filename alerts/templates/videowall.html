@@ -49,13 +49,15 @@
   const singleLbl = document.getElementById('vwSingleLabel');
   const backBtn   = document.getElementById('vwBack');
   let currentNum  = null;
+  let openedAt    = 0;
 
   function openChannel(num, label) {
     currentNum = num;
+    openedAt = Date.now();
     wall.style.display   = 'none';
     single.style.display = '';
     singleLbl.textContent = 'Canal ' + num + ' — ' + label;
-    video.src = '/videowall/av/' + num + '?w=720';
+    video.src = '/videowall/av/' + num;
     video.load();
     // play() dentro del handler de clic (gesto del usuario) — los
     // navegadores permiten audio con sonido si arranca por una interacción
@@ -74,13 +76,26 @@
   // el mismo <video>), recargar automáticamente el mismo canal.
   video.addEventListener('error', function () {
     if (currentNum !== null && single.style.display !== 'none') {
-      video.src = '/videowall/av/' + currentNum + '?w=720';
+      openedAt = Date.now();
+      video.src = '/videowall/av/' + currentNum;
       video.load();
       video.play().catch(function () {});
     }
   });
+  // Margen antes de considerar "estancado" un canal recién abierto: la
+  // conexión en vivo a TVHeadend (ver alerts/videowall.py:stream_live_av)
+  // tarda unos segundos en entregar el primer fragmento (esperar keyframe +
+  // reconexión si hace falta) -- sin este margen, el navegador dispara
+  // "stalled" ANTES de que llegue el primer dato, esto recargaba de
+  // inmediato, y el nuevo intento volvía a tardar lo mismo: un ciclo de
+  // recarga infinito que nunca dejaba arrancar el video (bug real,
+  // encontrado 2026-08-10 -- VLC no tiene este problema porque no reinicia
+  // solo ante una espera inicial normal).
+  const STALL_GRACE_MS = 15000;
   video.addEventListener('stalled', function () {
-    if (single.style.display !== 'none' && video.currentTime === 0) {
+    if (single.style.display !== 'none' && video.currentTime === 0
+        && Date.now() - openedAt > STALL_GRACE_MS) {
+      openedAt = Date.now();
       video.load();
       video.play().catch(function () {});
     }
