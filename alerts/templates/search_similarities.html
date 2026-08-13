@@ -1,0 +1,218 @@
+{% extends 'base.html' %}
+{% block title %}Similitudes — {{ s.name }} — AlertaTV{% endblock %}
+{% block content %}
+
+<!-- Header -->
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary py-0 px-2">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+      <i class="bi bi-diagram-3" style="color:var(--purple)"></i>
+      <h4 class="mb-0 fw-bold">Similitudes — {{ s.name }}</h4>
+    </div>
+    <p style="color:var(--text2);font-size:.85rem;margin:0">
+      Agrupa coincidencias con texto prácticamente idéntico (el mismo spot/mención repetido varias veces)
+      y muestra el fragmento que se mantiene igual entre todas.
+    </p>
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <span style="font-size:.78rem;color:var(--muted)">
+      {% if report.generated_at %}Generado {{ report.generated_at }}{% endif %}
+    </span>
+    <a href="/searches/{{ s.id }}/similarities?refresh=1{{ '&pairs=1' if show_pairs }}" id="refresh-btn"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-clockwise me-1"></i>Recalcular
+    </a>
+  </div>
+</div>
+
+{% if report.stale %}
+<div class="alert py-2 px-3 mb-4" style="font-size:.82rem;background:#f59e0b1a;border:1px solid #f59e0b44;color:var(--amber)">
+  <i class="bi bi-info-circle me-1"></i>
+  Hay coincidencias nuevas desde el último análisis ({{ report.match_count }} entonces,
+  {{ report.current_match_count }} ahora) — este resultado puede estar desactualizado.
+  <a href="/searches/{{ s.id }}/similarities?refresh=1{{ '&pairs=1' if show_pairs }}" style="color:var(--amber);font-weight:600">Recalcular ahora</a>.
+</div>
+{% endif %}
+
+<!-- Stats -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-xl-3">
+    <div class="stat">
+      <div class="stat-val" style="color:var(--accent)">{{ report.match_count }}</div>
+      <div class="stat-lbl"><i class="bi bi-search me-1"></i>Coincidencias totales</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="stat">
+      <div class="stat-val" style="color:var(--purple)">{{ report.clusters|length }}</div>
+      <div class="stat-lbl"><i class="bi bi-diagram-3 me-1"></i>Patrones repetidos</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="stat">
+      <div class="stat-val" style="color:var(--orange)">
+        {{ report.clustered_count }}
+        {% if report.match_count %}
+          <span style="font-size:.9rem;color:var(--muted)">
+            ({{ (report.clustered_count / report.match_count * 100) | round | int }}%)
+          </span>
+        {% endif %}
+      </div>
+      <div class="stat-lbl"><i class="bi bi-collection me-1"></i>En algún patrón</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="stat">
+      <div class="stat-val" style="color:var(--green)">{{ report.unique_count }}</div>
+      <div class="stat-lbl"><i class="bi bi-file-earmark-text me-1"></i>Sin repetición</div>
+    </div>
+  </div>
+</div>
+
+{% if pairs_hidden or truncated %}
+<div style="font-size:.8rem;color:var(--text2);margin-bottom:1rem">
+  {% if pairs_hidden %}
+    Se ocultan {{ pairs_hidden }} {{ 'patrones' if pairs_hidden != 1 else 'patrón' }} con solo 2 repeticiones (menos confiables).
+    <a href="/searches/{{ s.id }}/similarities?pairs=1">Mostrarlos también</a>.
+  {% endif %}
+  {% if truncated %}
+    <br>Mostrando los {{ report.clusters|length }} patrones más frecuentes ({{ truncated }} más no se muestran aquí).
+  {% endif %}
+</div>
+{% elif show_pairs %}
+<div style="font-size:.8rem;color:var(--text2);margin-bottom:1rem">
+  <a href="/searches/{{ s.id }}/similarities">Ocultar pares con solo 2 repeticiones</a>.
+</div>
+{% endif %}
+
+{% if not report.clusters %}
+<div class="card">
+  <div class="card-body text-center py-5" style="color:var(--muted)">
+    <i class="bi bi-diagram-3 d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
+    No se detectaron coincidencias con texto repetido
+    ({{ 'mínimo 2' if show_pairs else 'mínimo 3' }} apariciones muy similares).
+    {% if not show_pairs %}<a href="/searches/{{ s.id }}/similarities?pairs=1">Buscar también pares (2 repeticiones)</a>.{% endif %}
+  </div>
+</div>
+{% else %}
+
+<div class="d-flex flex-column gap-3">
+  {% for c in report.clusters %}
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center py-3 px-4 flex-wrap gap-2">
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <span style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;font-weight:700;background:#6366f122;color:#818cf8;border-radius:20px;padding:3px 12px;border:1px solid #6366f144">
+          <i class="bi bi-repeat"></i> {{ c.size }} repeticiones
+        </span>
+        {% for ch in c.channels[:4] %}
+          <span class="kw" style="font-size:.72rem">{{ ch.name }} ({{ ch.count }})</span>
+        {% endfor %}
+        {% if c.channels|length > 4 %}
+          <span style="font-size:.72rem;color:var(--muted)">+{{ c.channels|length - 4 }} canal{{ 'es' if c.channels|length - 4 != 1 }} más</span>
+        {% endif %}
+      </div>
+      <span style="font-size:.78rem;color:var(--text2)">
+        <i class="bi bi-calendar-range me-1"></i>{{ c.first_ts[:16] }} → {{ c.last_ts[:16] }}
+      </span>
+    </div>
+    <div class="card-body px-4 py-3">
+      {% if c.common_fragment %}
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.35rem">
+          Fragmento idéntico en las {{ c.size }} apariciones
+        </div>
+        <div style="font-size:.92rem;line-height:1.5;background:var(--card2);border-radius:8px;padding:.6rem .9rem;border-left:3px solid var(--purple)">
+          “{{ c.common_fragment }}”
+        </div>
+      {% else %}
+        <div style="font-size:.82rem;color:var(--muted)">
+          <i class="bi bi-info-circle me-1"></i>Se agruparon por similitud general, pero no comparten un fragmento exacto único.
+        </div>
+      {% endif %}
+      <button class="btn btn-sm btn-outline-secondary mt-3" type="button"
+              data-bs-toggle="collapse" data-bs-target="#occ-{{ loop.index }}">
+        <i class="bi bi-list-ul me-1"></i>Ver las {{ c.size }} apariciones
+      </button>
+      <div class="collapse mt-3" id="occ-{{ loop.index }}">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th style="width:140px">Canal</th>
+                <th style="width:170px">Fecha / hora</th>
+                <th>Texto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for o in c.occurrences %}
+              <tr>
+                <td style="font-size:.78rem;color:var(--text2)">{{ o.channel_name }}</td>
+                <td style="font-size:.78rem;color:var(--text2);white-space:nowrap">{{ o.timestamp[:19] if o.timestamp }}</td>
+                <td style="font-size:.82rem">{{ o.matched_text | mark_fragment(c.common_fragment) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if report.unique_matches %}
+<div class="card mt-4">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4 flex-wrap gap-2">
+    <span style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;font-weight:700;background:#10b98122;color:var(--green);border-radius:20px;padding:3px 12px;border:1px solid #10b98144">
+      <i class="bi bi-file-earmark-text"></i> {{ report.unique_count }} sin ningún patrón
+    </span>
+    <span style="font-size:.78rem;color:var(--text2)">No comparten texto repetido con ninguna otra coincidencia de esta búsqueda</span>
+  </div>
+  <div class="card-body px-4 py-3">
+    {% if unique_truncated %}
+    <div style="font-size:.8rem;color:var(--text2);margin-bottom:.75rem">
+      Mostrando las {{ report.unique_matches|length }} más recientes ({{ unique_truncated }} más no se muestran aquí).
+    </div>
+    {% endif %}
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#unique-matches">
+      <i class="bi bi-list-ul me-1"></i>Ver las {{ report.unique_matches|length }} coincidencias
+    </button>
+    <div class="collapse mt-3" id="unique-matches">
+      <div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th style="width:140px">Canal</th>
+              <th style="width:170px">Fecha / hora</th>
+              <th style="width:100px">Palabra</th>
+              <th>Texto</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for o in report.unique_matches %}
+            <tr>
+              <td style="font-size:.78rem;color:var(--text2)">{{ o.channel_name }}</td>
+              <td style="font-size:.78rem;color:var(--text2);white-space:nowrap">{{ o.timestamp[:19] if o.timestamp }}</td>
+              <td style="font-size:.78rem"><span class="kw">{{ o.keyword }}</span></td>
+              <td style="font-size:.82rem">{{ o.matched_text | highlight(o.keyword, s.phonetic, s.whole_word) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script>
+document.getElementById('refresh-btn').addEventListener('click', function () {
+  this.classList.add('disabled');
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Recalculando…';
+});
+</script>
+{% endblock %}

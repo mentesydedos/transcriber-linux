@@ -105,6 +105,51 @@ def _full_cfg(adb) -> dict:
     return {r['key']: r['value'] for r in rows}
 
 
+# ── Contexto del match ────────────────────────────────────────────────────────
+CONTEXT_MAXLEN = 1500  # antes 500 (un solo chunk) -- ahora hasta 3 pegados (previo+actual+siguiente)
+
+# Separadores invisibles entre el chunk original y los chunks vecinos que se
+# le pegan para dar más contexto -- marcan dónde empieza/termina el chunk de
+# 30s donde SIEMPRE está la keyword real (el match se detecta contra el
+# chunk original antes de pegar nada). alerts/app.py los usa para seguir
+# calculando precise_timestamp sobre la duración real de ESE chunk, no sobre
+# el texto ya con contexto pegado -- si no, el cálculo "en qué segundo se
+# dijo la palabra" se distorsiona para keywords cerca del inicio/final del
+# chunk (justo los casos que esto arregla). Deben coincidir con
+# CHUNK_SEP_PREV / CHUNK_SEP_NEXT en alerts/app.py. Dos marcadores distintos
+# (no uno solo) para poder distinguir sin ambigüedad cuál es el chunk
+# original aunque falte el previo o el siguiente.
+CHUNK_SEP_PREV = '⁠'   # WORD JOINER (U+2060) -- antes del chunk actual
+CHUNK_SEP_NEXT = '​'   # ZERO WIDTH SPACE (U+200B) -- después del chunk actual
+
+def _with_context_chunks(tdb, channel_id: int, timestamp: str, text: str) -> str:
+    """Concatena los chunks ANTERIOR y SIGUIENTE del mismo canal (los que ya
+    existan) al del chunk donde se detectó la keyword. Un chunk es ~30s de
+    audio, así que si la keyword cae cerca del inicio o del final, casi no
+    queda contexto de ese lado dentro del mismo chunk -- el resto de la
+    frase/anuncio está en el chunk vecino, una fila aparte en transcriptions.
+    Esto puede triplicar la ventana de texto capturada (30s -> hasta ~90s)
+    sin tocar la captura/transcripción en vivo, reusando datos que ya se
+    están grabando. Usa el índice idx_trans_channel_ts (channel_id, timestamp)."""
+    prev = tdb.execute("""
+        SELECT text FROM transcriptions
+        WHERE channel_id=? AND timestamp < ?
+        ORDER BY timestamp DESC LIMIT 1
+    """, (channel_id, timestamp)).fetchone()
+    nxt = tdb.execute("""
+        SELECT text FROM transcriptions
+        WHERE channel_id=? AND timestamp > ?
+        ORDER BY timestamp ASC LIMIT 1
+    """, (channel_id, timestamp)).fetchone()
+
+    result = text
+    if nxt and nxt['text'] and nxt['text'] != '[~]':
+        result = f"{result} {CHUNK_SEP_NEXT} {nxt['text']}"
+    if prev and prev['text'] and prev['text'] != '[~]':
+        result = f"{prev['text']} {CHUNK_SEP_PREV} {result}"
+    return result[:CONTEXT_MAXLEN]
+
+
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 def _process(adb, tdb, smtp, cfg=None):
     today = date.today().isoformat()
@@ -156,11 +201,12 @@ def _process(adb, tdb, smtp, cfg=None):
                     continue
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
+                        ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
                         adb.execute("""INSERT OR IGNORE INTO matches
                             (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
                             VALUES (?,?,?,?,?,?)""",
                             (s['id'], kw, row['channel_id'], row['channel_name'],
-                             row['timestamp'], text[:500]))
+                             row['timestamp'], ctx))
             last_hist_id  = hist[-1]['id']
             total_hist   += len(hist)
             adb.execute(
@@ -213,11 +259,15 @@ def _process(adb, tdb, smtp, cfg=None):
                 whole_word = bool(s['whole_word'])
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
+                        # El chunk siguiente casi nunca existe todavía en este
+                        # punto (se procesa ~al momento) -- se agrega si ya
+                        # llegó, si no cae al texto del chunk solo, sin error.
+                        ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
                         adb.execute("""INSERT OR IGNORE INTO matches
                             (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
                             VALUES (?,?,?,?,?,?)""",
                             (s['id'], kw, row['channel_id'], row['channel_name'],
-                             row['timestamp'], text[:500]))
+                             row['timestamp'], ctx))
 
                         base = {
                             'search_id':   s['id'],
@@ -226,7 +276,7 @@ def _process(adb, tdb, smtp, cfg=None):
                             'channel_id':  row['channel_id'],
                             'channel_name':row['channel_name'],
                             'timestamp':   row['timestamp'],
-                            'matched_text':text[:500],
+                            'matched_text':ctx,
                         }
 
                         # Email: solo en modo inmediato con correo configurado

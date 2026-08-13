@@ -154,8 +154,14 @@
                   <i class="bi bi-pause-fill" style="font-size:.65rem"></i> Pausada
                 </span>
               {% else %}
-                <span style="display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:600;background:#10b98122;color:#10b981;border-radius:20px;padding:2px 10px;border:1px solid #10b98144">
+                <span id="status-{{ s.id }}" style="display:{{ 'none' if not s.initialized else 'inline-flex' }};align-items:center;gap:4px;font-size:.72rem;font-weight:600;background:#10b98122;color:#10b981;border-radius:20px;padding:2px 10px;border:1px solid #10b98144">
                   <i class="bi bi-broadcast" style="font-size:.65rem"></i> Activa
+                </span>
+              {% endif %}
+              {% if s.status == 'active' %}
+                <span id="proc-{{ s.id }}" style="display:{{ 'inline-flex' if not s.initialized else 'none' }};align-items:center;gap:5px;font-size:.72rem;font-weight:600;background:#6366f122;color:#818cf8;border-radius:20px;padding:2px 10px;border:1px solid #6366f144">
+                  <span class="spinner-border" style="width:.65rem;height:.65rem;border-width:2px"></span>
+                  Procesando histórico<span id="proc-pct-{{ s.id }}">{{ ' — ' ~ ((s.init_rows_done / s.init_rows_total * 100) | round | int) ~ '%' if s.init_rows_total else '' }}</span>
                 </span>
               {% endif %}
             </div>
@@ -293,6 +299,16 @@
         (data.searches || []).forEach(s => {
           const el = document.getElementById('mc-' + s.id);
           if (el) el.textContent = s.mc;
+
+          // Búsquedas todavía procesando su histórico: badge "Procesando" <-> "Activa"
+          const procEl   = document.getElementById('proc-' + s.id);
+          const statusEl = document.getElementById('status-' + s.id);
+          if (procEl) {
+            procEl.style.display = s.initialized ? 'none' : 'inline-flex';
+            const pctEl = document.getElementById('proc-pct-' + s.id);
+            if (pctEl && !s.initialized) pctEl.textContent = ' — ' + s.init_pct + '%';
+          }
+          if (statusEl) statusEl.style.display = s.initialized ? 'inline-flex' : 'none';
         });
         // Update stat cards
         const tmEl = document.getElementById('stat-total-matches');

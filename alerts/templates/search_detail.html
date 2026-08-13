@@ -52,6 +52,9 @@
         <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
+    <a href="/searches/{{ s.id }}/similarities" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-diagram-3 me-1" style="color:var(--purple)"></i>Similitudes
+    </a>
     <a href="/searches/{{ s.id }}/edit" class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-pencil me-1"></i>Editar
     </a>
@@ -368,7 +371,7 @@
           <th>Canal</th>
           <th>Programa (EPG)</th>
           <th>Palabra</th>
-          <th>Texto transcrito (±30 palabras de contexto)</th>
+          <th>Texto transcrito (±50 palabras de contexto)</th>
         </tr>
       </thead>
       <tbody>
@@ -553,23 +556,19 @@
   // Also update the inline total badge in card header
   const headerBadge = document.querySelector('.card-header .rounded[style*="card2"]');
   const isAdmin   = {{ 'true' if session.role == 'admin' else 'false' }};
-  const wholeWord = {{ 'true' if s.whole_word else 'false' }};
 
   function esc(s) {
     return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function makeRow(m) {
-    // Usa centered_text (recortado a 30 palabras antes y 30 después). Lo
-    // provee el backend en el endpoint /api/searches/.../matches.
+    // Usa centered_text (recortado a 50 palabras antes y 50 después). Lo
+    // provee el backend en el endpoint /api/searches/.../matches, ya resaltado
+    // en centered_highlighted (misma función que el render inicial -- así
+    // funciona igual en modo fonético con keywords de varias palabras).
     const fat      = m.found_at  ? m.found_at.slice(0, 19)  : '';
-    const rawCent  = esc(m.centered_text || m.matched_text || '');
     const rawFull  = esc(m.matched_text || '');
-    const kwEsc    = esc(m.keyword || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const kwRe     = wholeWord ? ('(?<!\\w)' + kwEsc + '(?!\\w)') : kwEsc;
-    const txt      = kwEsc
-      ? rawCent.replace(new RegExp(kwRe, 'gi'), s => '<mark>' + s + '</mark>')
-      : rawCent;
+    const txt      = m.centered_highlighted || esc(m.centered_text || m.matched_text || '');
     const clipCell = m.channel_kind === 'tv'
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
       : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
@@ -643,7 +642,7 @@
 .matches-table td:last-child  { padding-right: 1.5rem !important; }
 .matches-table th:first-child,
 .matches-table td:first-child { padding-left:  1.5rem !important; }
-/* Texto centrado en la palabra (60 palabras de contexto). Wrap en 2 líneas
+/* Texto centrado en la palabra (±50 palabras de contexto). Wrap en 2 líneas
    con elipsis si excede; el title del td muestra el chunk completo. */
 .matches-table .mtext-wide {
   font-size: .85rem; color: var(--text2);

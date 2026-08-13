@@ -12,7 +12,7 @@
 </div>
 <p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">{{ s.name }}</p>
 
-<form method="post">
+<form method="post" id="search-edit-form">
 
   <div class="card p-4 mb-3">
     <div class="section-label mb-3">Identificación</div>
@@ -116,11 +116,19 @@
   </div>
 
   <div class="d-flex gap-2">
-    <button type="submit" class="btn btn-primary px-4 fw-semibold">
+    <button type="submit" id="submit-btn" class="btn btn-primary px-4 fw-semibold">
       <i class="bi bi-check-lg me-1"></i>Guardar cambios
     </button>
     <a href="/searches/{{ s.id }}" class="btn btn-outline-secondary">Cancelar</a>
   </div>
+
+  <script>
+  document.getElementById('search-edit-form').addEventListener('submit', function () {
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Guardando…';
+  });
+  </script>
 
 </form>
 </div>

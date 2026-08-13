@@ -39,7 +39,10 @@ def _phonetic(s: str) -> str:
     t = re.sub(r'x', 'ks', t)
     return t
 
-CHUNK_SECONDS = 30   # debe coincidir con worker.py / transcriber.py
+CHUNK_SECONDS  = 30   # debe coincidir con worker.py / transcriber.py
+# Deben coincidir con CHUNK_SEP_PREV / CHUNK_SEP_NEXT en alerts/watcher.py.
+CHUNK_SEP_PREV = '⁠'   # word joiner (U+2060) -- antes del chunk original
+CHUNK_SEP_NEXT = '​'   # zero-width space (U+200B) -- después del chunk original
 
 def _locate_keyword(text, keyword, phonetic=False, whole_word=False):
     """Encuentra el índice (basado en palabras) de la primera ocurrencia
@@ -86,7 +89,7 @@ def _locate_keyword(text, keyword, phonetic=False, whole_word=False):
             return i, n
     return None, n
 
-def _center_text(text, idx_word, words_each_side=30):
+def _center_text(text, idx_word, words_each_side=50):
     """Recorta el texto centrado en la palabra match: N palabras antes y N después.
     Si no hay match, devuelve las primeras 2N+1 palabras."""
     if not text:
@@ -122,6 +125,18 @@ def _precise_timestamp(start_ts, idx_word, total_words, chunk_sec=CHUNK_SECONDS)
     except Exception:
         return start_ts
 
+def _current_chunk_span(text: str) -> str:
+    """El texto del chunk ORIGINAL (30s) donde está garantizado el match,
+    despegando el chunk previo y/o siguiente que matched_text pueda traer
+    pegados para dar más contexto (ver CHUNK_SEP_PREV/NEXT y
+    alerts/watcher.py)."""
+    t = text
+    if CHUNK_SEP_PREV in t:
+        t = t.split(CHUNK_SEP_PREV, 1)[1]
+    if CHUNK_SEP_NEXT in t:
+        t = t.split(CHUNK_SEP_NEXT, 1)[0]
+    return t.strip()
+
 def _enrich_match(m, phonetic=False, whole_word=False):
     """Convierte una Row a dict y agrega: precise_timestamp, centered_text y
     channel_kind ('tv'/'radio'/'youtube' — para no mostrar el ícono de video
@@ -131,10 +146,34 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     md = dict(m)
     text = md.get('matched_text') or ''
     kw   = md.get('keyword') or ''
-    idx, total = _locate_keyword(text, kw, phonetic=phonetic, whole_word=whole_word)
-    md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx, total)
-    md['centered_text']     = _center_text(text, idx, words_each_side=30)
-    md['channel_kind']      = channel_type(md.get('channel_id'))
+
+    # precise_timestamp asume que el índice/total de palabras corresponden a
+    # UN chunk de CHUNK_SECONDS (30s). Como matched_text puede traer pegados
+    # el chunk previo y/o el siguiente para dar más contexto, se busca la
+    # keyword SOLO dentro del chunk original (nunca en los pegados -- podría
+    # aparecer por casualidad ahí y hacer que se centre en la ocurrencia
+    # equivocada) y se usa ese conteo de palabras, no el del texto completo
+    # -- si no, la fracción se diluye con las palabras pegadas y el
+    # timestamp estimado queda mal, sobre todo cerca del inicio/final del
+    # chunk original, justo los casos que esto arregla.
+    current_chunk = _current_chunk_span(text)
+    idx_chunk, total_chunk = _locate_keyword(current_chunk, kw, phonetic=phonetic, whole_word=whole_word)
+    md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx_chunk, total_chunk)
+
+    # Posición de esa misma ocurrencia dentro del texto COMPLETO (con
+    # contexto pegado), para centrar el snippet mostrado -- se calcula
+    # sumando cuántas "palabras" (vía text.split(), separadores incluidos)
+    # hay antes del chunk actual, en vez de volver a buscar la keyword en el
+    # texto completo (que podría encontrar antes una ocurrencia casual en el
+    # chunk previo pegado).
+    prefix_words = 0
+    if CHUNK_SEP_PREV in text:
+        prefix_words = len(text.split(CHUNK_SEP_PREV, 1)[0].split()) + 1
+    idx_full = (idx_chunk + prefix_words) if idx_chunk is not None else None
+    raw_centered = _center_text(text, idx_full, words_each_side=50)
+    cleaned = raw_centered.replace(CHUNK_SEP_PREV, ' ').replace(CHUNK_SEP_NEXT, ' ')
+    md['centered_text'] = re.sub(r' {2,}', ' ', cleaned).strip()
+    md['channel_kind']  = channel_type(md.get('channel_id'))
     return md
 
 def _highlight(text, keyword, phonetic=False, whole_word=False):
@@ -147,20 +186,42 @@ def _highlight(text, keyword, phonetic=False, whole_word=False):
         return Markup(html_escape(text or ''))
     text, keyword = str(text), str(keyword)
     if phonetic:
-        ph_kw   = _phonetic(keyword)
-        pattern = re.compile(r'(?<!\w)' + re.escape(ph_kw) + r'(?!\w)') if whole_word else None
+        # kw_words: una entrada por palabra de la keyword (puede ser una frase
+        # de varias palabras, ej. "Nuevo Pantene Molecular Bond Repair") --
+        # antes esto comparaba la fonética de la FRASE COMPLETA contra la de
+        # cada palabra suelta del texto, lo cual nunca podía coincidir salvo
+        # que la keyword fuera de una sola palabra. Ahora se desliza una
+        # ventana de k palabras consecutivas, igual que _locate_keyword.
+        kw_words = [_phonetic(w) for w in keyword.split()]
+        k = len(kw_words)
         parts = re.split(r'(\s+)', text)
+        word_pos = [i for i, p in enumerate(parts) if p.strip()]
+        marked = [False] * len(word_pos)
+        for start in range(len(word_pos) - k + 1):
+            ok = True
+            for j in range(k):
+                w_ph = _phonetic(parts[word_pos[start + j]])
+                if whole_word:
+                    if not re.search(r'(?<!\w)' + re.escape(kw_words[j]) + r'(?!\w)', w_ph):
+                        ok = False
+                        break
+                elif kw_words[j] not in w_ph:
+                    ok = False
+                    break
+            if ok:
+                for j in range(k):
+                    marked[start + j] = True
         out = []
+        wi = 0
         for p in parts:
             if not p.strip():
                 out.append(str(html_escape(p)))
                 continue
-            p_ph    = _phonetic(p)
-            matched = bool(pattern.search(p_ph)) if whole_word else (ph_kw in p_ph)
-            if matched:
+            if marked[wi]:
                 out.append(f'<mark>{html_escape(p)}</mark>')
             else:
                 out.append(str(html_escape(p)))
+            wi += 1
         return Markup(''.join(out))
     # Búsqueda exacta sin acentos/mayúsculas: regex case-insensitive sobre texto escapeado
     esc_text = str(html_escape(text))
@@ -169,6 +230,78 @@ def _highlight(text, keyword, phonetic=False, whole_word=False):
     result   = re.sub(pattern, lambda m: f'<mark>{m.group()}</mark>',
                       esc_text, flags=re.IGNORECASE)
     return Markup(result)
+
+
+def _mark_fragment(text, fragment):
+    """Resalta el fragmento común de un cluster de similitud (alerts/similarity.py)
+    dentro de text. El fragmento se extrajo comparando SOLO dos miembros del
+    cluster (el más largo contra su mejor match -- ver _common_fragment), así
+    que puede no ser substring literal de un tercer miembro que tenga alguna
+    palabra distinta en medio del mismo guion. Por eso no se busca substring
+    exacto: se resalta el tramo coincidente MÁS LARGO entre el fragmento y
+    este texto en particular (tolerante a mayúsculas/acentos/puntuación),
+    tal cual está escrito en esta ocurrencia. Con coincidencias muy cortas
+    (probablemente casuales) no se resalta nada."""
+    if not text or not fragment:
+        return Markup(html_escape(text or ''))
+    from alerts.similarity import _normalize_with_map
+    norm_text, tmap = _normalize_with_map(text)
+    norm_frag, _    = _normalize_with_map(fragment)
+    if not norm_frag:
+        return Markup(html_escape(text))
+    # Camino rápido: la mayoría de las apariciones SÍ contienen el fragmento
+    # literal (normalizado) -- un substring simple es prácticamente gratis.
+    # SequenceMatcher (O(n·m) en el peor caso) solo se usa como respaldo para
+    # el minoría de casos con alguna palabra distinta en medio, y ahora que
+    # matched_text puede llegar a ~1000 caracteres (contexto duplicado) es
+    # demasiado costoso para llamarlo en cada aparición sin necesidad.
+    idx = norm_text.find(norm_frag)
+    if idx != -1:
+        start = tmap[idx]
+        end   = tmap[idx + len(norm_frag) - 1] + 1
+    else:
+        # SequenceMatcher sobre el texto COMPLETO es caro (ahora hasta ~1000
+        # caracteres, con el contexto duplicado) para un respaldo que además
+        # casi nunca encuentra nada útil (medido: ~80% de las veces que el
+        # fragmento completo no aparece literal, tampoco hay ningún tramo
+        # >=20 caracteres que resaltar). Antes de pagar ese costo se prueban
+        # 3 sondeos baratos (substring de ~25 caracteres al inicio/medio/
+        # final del fragmento) -- si ninguno aparece ni aproximadamente, se
+        # deja el texto sin resaltar en vez de gastar la comparación completa
+        # para, la mayoría de las veces, no encontrar nada de todos modos.
+        PROBE_LEN, WINDOW = 25, 200
+        nf = len(norm_frag)
+        probe_positions = {0, max(0, nf // 2 - PROBE_LEN // 2), max(0, nf - PROBE_LEN)}
+        pidx = -1
+        for p in probe_positions:
+            probe = norm_frag[p:p + PROBE_LEN]
+            if len(probe) < 8:
+                continue
+            found = norm_text.find(probe)
+            if found != -1:
+                pidx = found - p  # posición estimada del inicio del fragmento
+                break
+        if pidx == -1:
+            return Markup(html_escape(text))
+        from difflib import SequenceMatcher
+        wstart = max(0, pidx - WINDOW)
+        wend   = min(len(norm_text), pidx + nf + WINDOW)
+        window = norm_text[wstart:wend]
+        sm = SequenceMatcher(None, norm_frag, window, autojunk=False)
+        m  = sm.find_longest_match(0, nf, 0, len(window))
+        if m.size < min(20, nf // 2):
+            return Markup(html_escape(text))
+        start = tmap[wstart + m.b]
+        end   = tmap[wstart + m.b + m.size - 1] + 1
+    # Concatenar objetos Markup con "+" re-escapa el lado que no es Markup (para
+    # evitar XSS por descuido) -- por eso cada pieza se pasa por str() primero
+    # y el envoltorio Markup() se aplica solo una vez, al final, sobre texto
+    # plano ya escapado (mismo patrón que usa _highlight arriba).
+    return Markup(
+        str(html_escape(text[:start])) +
+        f'<mark>{html_escape(text[start:end])}</mark>' +
+        str(html_escape(text[end:]))
+    )
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -305,8 +438,9 @@ def create_app() -> Flask:
 
     app = Flask(__name__, template_folder='templates')
     app.secret_key = _get_secret_key()
-    app.jinja_env.filters['fromjson']   = json.loads
-    app.jinja_env.filters['highlight']  = _highlight
+    app.jinja_env.filters['fromjson']       = json.loads
+    app.jinja_env.filters['highlight']      = _highlight
+    app.jinja_env.filters['mark_fragment']  = _mark_fragment
 
     # ── DB helpers ─────────────────────────────────────────────────
     def db():
@@ -608,7 +742,7 @@ def create_app() -> Flask:
                 flash('Nombre, palabras y fechas son obligatorios.', 'danger')
             else:
                 kws = [k.strip() for k in re.split(r'[\n,]+', kw_raw) if k.strip()]
-                db().execute("""
+                cur = db().execute("""
                     INSERT INTO searches
                       (user_id,name,keywords,phonetic,whole_word,date_start,date_end,
                        delivery_mode,report_email,status,notify_telegram,media_types)
@@ -616,8 +750,12 @@ def create_app() -> Flask:
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
                       phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types))
                 db().commit()
-                flash(f'Búsqueda «{name}» creada.', 'success')
-                return redirect(url_for('dashboard'))
+                flash(f'Búsqueda «{name}» creada. Procesando el histórico…', 'success')
+                # Al detalle, no al dashboard -- ahí ya está el banner de progreso
+                # (spinner + % + ETA) que el watcher va llenando; en el dashboard
+                # el usuario nunca lo veía porque el redirect lo mandaba de vuelta
+                # a la lista sin ninguna señal de que algo se estaba procesando.
+                return redirect(url_for('search_detail', sid=cur.lastrowid))
         from alerts.channel_types import MEDIA_TYPES
         return render_template('search_new.html', today=date.today().isoformat(),
                                media_types_choices=MEDIA_TYPES)
@@ -740,6 +878,51 @@ def create_app() -> Flask:
             heatmap=heatmap, hm_max=hm_max, hm_dates=hm_dates_list,
             prog_map=prog_map,
         )
+
+    @app.route('/searches/<int:sid>/similarities')
+    @login_required
+    def search_similarities(sid):
+        s = _get_search(sid)
+        if not s:
+            flash('Búsqueda no encontrada.', 'danger')
+            return redirect(url_for('dashboard'))
+        from alerts.similarity import get_or_generate
+        force = request.args.get('refresh') == '1'
+        # Los pares sueltos (2 repeticiones) suelen ser ruido -- por defecto se
+        # ocultan; con una búsqueda de miles de coincidencias puede haber
+        # cientos de clusters, así que también se acota cuántos se dibujan.
+        show_pairs = request.args.get('pairs') == '1'
+        min_size   = 2 if show_pairs else 3
+        RENDER_CAP        = 150
+        UNIQUE_RENDER_CAP = 200
+
+        report = get_or_generate(sid, force=force)
+        all_clusters    = report['clusters']
+        shown           = [c for c in all_clusters if c['size'] >= min_size][:RENDER_CAP]
+        pairs_hidden    = sum(1 for c in all_clusters if c['size'] == 2) if not show_pairs else 0
+        truncated       = max(0, len([c for c in all_clusters if c['size'] >= min_size]) - RENDER_CAP)
+        unique_shown     = report['unique_matches'][:UNIQUE_RENDER_CAP]
+        unique_truncated = max(0, len(report['unique_matches']) - UNIQUE_RENDER_CAP)
+
+        # matched_text puede traer hasta 3 chunks pegados (~1500 caracteres,
+        # ver alerts/watcher.py) para dar contexto/timestamp preciso -- eso
+        # es demasiado texto para una celda de tabla y, sin acotar, vuelve
+        # lento el resaltado (mark_fragment/highlight) de las CIENTOS de
+        # apariciones que se dibujan aquí. Se reemplaza por el mismo
+        # recorte ±50 palabras alrededor de la keyword que ya usa la vista
+        # de detalle (_enrich_match), solo para lo que realmente se muestra.
+        phonetic, whole_word = bool(s['phonetic']), bool(s['whole_word'])
+        for c in shown:
+            for o in c['occurrences']:
+                o['matched_text'] = _enrich_match(o, phonetic=phonetic, whole_word=whole_word)['centered_text']
+        for o in unique_shown:
+            o['matched_text'] = _enrich_match(o, phonetic=phonetic, whole_word=whole_word)['centered_text']
+
+        report = dict(report, clusters=shown, unique_matches=unique_shown)
+
+        return render_template('search_similarities.html', s=s, report=report,
+                               show_pairs=show_pairs, pairs_hidden=pairs_hidden,
+                               truncated=truncated, unique_truncated=unique_truncated)
 
     def _match_moment(sid, mid):
         """Devuelve (match_row, datetime del instante exacto de la palabra) o (None, None)."""
@@ -1117,12 +1300,18 @@ def create_app() -> Flask:
     @app.route('/admin/health/<date_str>')
     @admin_required
     def admin_health_date(date_str):
-        from datetime import datetime
-        from alerts.health_report import get_or_generate, list_report_dates
+        from datetime import datetime, timedelta
+        from alerts.health_report import get_or_generate, list_report_dates, live_status
         today = datetime.now().strftime('%Y-%m-%d')
         report = get_or_generate(date_str)
+        d = datetime.strptime(date_str, '%Y-%m-%d')
         return render_template('admin_health.html', report=report, date_str=date_str,
-                               is_today=(date_str == today), dates=list_report_dates())
+                               is_today=(date_str == today), dates=list_report_dates(),
+                               # Estado en vivo: siempre "ahora", sin importar que dia se este
+                               # navegando -- responde "como estamos AHORA MISMO", no el historico.
+                               live=live_status(),
+                               prev_date=(d - timedelta(days=1)).strftime('%Y-%m-%d'),
+                               next_date=(d + timedelta(days=1)).strftime('%Y-%m-%d') if date_str < today else None)
 
     @app.route('/admin/users/<int:uid>/toggle', methods=['POST'])
     @admin_required
@@ -1203,8 +1392,14 @@ def create_app() -> Flask:
         total = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
         phonetic   = bool(s['phonetic'])
         whole_word = bool(s['whole_word'])
-        return jsonify(matches=[_enrich_match(r, phonetic=phonetic, whole_word=whole_word) for r in rows],
-                       total=total)
+        enriched = [_enrich_match(r, phonetic=phonetic, whole_word=whole_word) for r in rows]
+        for m in enriched:
+            # HTML ya resaltado con la misma lógica que el render inicial (filtro
+            # Jinja "highlight") -- el JS de auto-refresh solo lo inserta tal cual,
+            # en vez de re-implementar el resaltado (y perder el modo fonético).
+            m['centered_highlighted'] = str(_highlight(m.get('centered_text', ''), m.get('keyword', ''),
+                                                        phonetic=phonetic, whole_word=whole_word))
+        return jsonify(matches=enriched, total=total)
 
     @app.route('/api/stats')
     @login_required
@@ -1215,7 +1410,7 @@ def create_app() -> Flask:
 
         if is_admin:
             searches = d.execute("""
-                SELECT s.id, s.name, s.status,
+                SELECT s.id, s.name, s.status, s.initialized, s.init_rows_done, s.init_rows_total,
                        (SELECT COUNT(*) FROM matches m WHERE m.search_id=s.id) as mc
                 FROM searches s ORDER BY s.created_at DESC
             """).fetchall()
@@ -1229,7 +1424,7 @@ def create_app() -> Flask:
             total_matches = d.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
         else:
             searches = d.execute("""
-                SELECT s.id, s.name, s.status,
+                SELECT s.id, s.name, s.status, s.initialized, s.init_rows_done, s.init_rows_total,
                        (SELECT COUNT(*) FROM matches m WHERE m.search_id=s.id) as mc
                 FROM searches s WHERE s.user_id=? ORDER BY s.created_at DESC
             """, (uid,)).fetchall()
@@ -1243,8 +1438,14 @@ def create_app() -> Flask:
 
         active_searches = sum(1 for s in searches if s['status'] == 'active')
 
+        def _pct(s):
+            total = s['init_rows_total'] or 0
+            done  = s['init_rows_done'] or 0
+            return round(done / total * 100) if total > 0 else 0
+
         return jsonify(
-            searches=[{'id': s['id'], 'mc': s['mc']} for s in searches],
+            searches=[{'id': s['id'], 'mc': s['mc'], 'initialized': bool(s['initialized']),
+                       'init_pct': _pct(s)} for s in searches],
             total_matches=total_matches,
             active_searches=active_searches,
             recent=[{
