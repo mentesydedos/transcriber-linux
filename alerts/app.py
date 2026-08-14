@@ -372,6 +372,9 @@ def _init_db():
         # Default incluye todo lo existente al momento de la migración, para
         # no cambiar el comportamiento de búsquedas ya creadas.
         ('media_types',      "TEXT DEFAULT 'tv,radio'"),
+        # Última vez que se consultó Google Noticias para esta búsqueda (ver
+        # alerts/googlenews.py) -- NULL hasta el primer fetch.
+        ('news_last_fetch',  'TEXT'),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -380,6 +383,13 @@ def _init_db():
             pass
     try:
         conn.execute("ALTER TABLE users ADD COLUMN tg_chat_id TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        # URL del artículo original -- solo se llena para matches de Google
+        # Noticias (channel_id=NEWS_CHANNEL_ID); NULL para TV/radio.
+        conn.execute("ALTER TABLE matches ADD COLUMN source_url TEXT")
         conn.commit()
     except Exception:
         pass

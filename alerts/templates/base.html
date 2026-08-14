@@ -13,7 +13,7 @@
   --card:    #111827;
   --card2:   #1a2235;
   --border:  #1e2d45;
-  --muted:   #5a7399;
+  --muted:   #758cae;
   --accent:  #3b82f6;
   --green:   #10b981;
   --amber:   #f59e0b;
@@ -28,26 +28,29 @@
 
 [data-theme="light"] {
   --bg: #f1f5f9; --card: #ffffff; --card2: #f8fafc;
-  --border: #cbd5e1; --muted: #94a3b8; --text: #1e293b; --text2: #475569;
+  --border: #cbd5e1; --muted: #5f7390; --text: #1e293b; --text2: #475569;
   --accent: #2563eb; --green: #059669; --amber: #d97706;
   --red: #dc2626; --purple: #7c3aed; --orange: #ea580c;
 }
 [data-theme="midnight"] {
   --bg: #000; --card: #0a0a0a; --card2: #111;
-  --border: #1f1f1f; --muted: #3a3a3a; --text: #e0e0e0; --text2: #787878;
+  --border: #1f1f1f; --muted: #7e7e7e; --text: #e0e0e0; --text2: #8c8c8c;
   --accent: #00d4ff; --green: #00e676; --amber: #ffb300;
   --red: #ff4444; --purple: #ce93d8; --orange: #ff9100;
 }
 [data-theme="ocean"] {
   --bg: #0a1628; --card: #0f2040; --card2: #162b55;
-  --border: #1e4080; --muted: #3a6090; --text: #c8e0ff; --text2: #6a9fd8;
+  --border: #1e4080; --muted: #7297c6; --text: #c8e0ff; --text2: #6a9fd8;
   --accent: #4da6ff; --green: #4dffb4; --amber: #ffd04d;
   --red: #ff6b6b; --purple: #c084fc; --orange: #ffb347;
 }
 
 [data-theme="light"] .form-control,
 [data-theme="light"] .form-select { background: #fff !important; color: #1e293b !important; border-color: #cbd5e1 !important; }
-[data-theme="light"] .form-control::placeholder { color: #94a3b8 !important; }
+/* :not(:checked) para no pisar el color que Bootstrap le pone a un switch/checkbox
+   ya activado (si no, se ven "apagados" aunque estén marcados) */
+[data-theme="light"] .form-check-input:not(:checked) { background-color: #fff !important; border-color: #cbd5e1 !important; }
+[data-theme="light"] .form-control::placeholder { color: var(--muted) !important; }
 [data-theme="light"] .table { color: #1e293b !important; }
 [data-theme="light"] .table tbody tr:hover { background: #f1f5f9 !important; }
 [data-theme="light"] .btn-outline-secondary { border-color: #cbd5e1 !important; color: #475569 !important; }
@@ -210,6 +213,9 @@ a:hover { color: #60a5fa; }
       <div class="sidebar-section">Administración</div>
       <a class="nav-link {% if request.path=='/admin' %}active{% endif %}" href="/admin">
         <i class="bi bi-shield-check"></i> Panel Admin
+      </a>
+      <a class="nav-link {% if request.path.startswith('/admin/health') %}active{% endif %}" href="/admin/health">
+        <i class="bi bi-heart-pulse"></i> Salud del sistema
       </a>
       <a class="nav-link {% if request.path=='/settings' %}active{% endif %}" href="/settings">
         <i class="bi bi-gear"></i> Ajustes

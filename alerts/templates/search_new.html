@@ -39,14 +39,14 @@
 
     <!-- Switch fonética/precisa -->
     <div class="d-flex align-items-start gap-3 p-3 rounded"
-         style="background:#070d1a;border:1px solid var(--border)">
+         style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
       <div class="form-check form-switch mb-0 mt-1" style="min-width:70px">
         <input class="form-check-input" type="checkbox" name="phonetic" id="sw_phonetic"
                role="switch" style="width:2.75em;height:1.4em;cursor:pointer">
       </div>
       <div>
-        <div class="fw-semibold" id="ph_label">Búsqueda precisa</div>
-        <div style="font-size:.8rem;color:var(--text2);margin-top:3px" id="ph_desc">
+        <div class="fw-semibold" id="ph_label" style="color:var(--text)">Búsqueda precisa</div>
+        <div style="font-size:.8rem;color:var(--text);margin-top:3px" id="ph_desc">
           <span id="d_off">
             <span class="type-exact me-1"><i class="bi bi-cursor-text"></i></span>
             Coincidencia exacta, tolerando variaciones de acentos y mayúsculas.
@@ -61,14 +61,14 @@
 
     <!-- Switch palabra completa -->
     <div class="d-flex align-items-start gap-3 p-3 rounded mt-2"
-         style="background:#070d1a;border:1px solid var(--border)">
+         style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
       <div class="form-check form-switch mb-0 mt-1" style="min-width:70px">
         <input class="form-check-input" type="checkbox" name="whole_word" id="sw_whole_word"
                role="switch" style="width:2.75em;height:1.4em;cursor:pointer">
       </div>
       <div>
-        <div class="fw-semibold">Solo palabra completa</div>
-        <div style="font-size:.8rem;color:var(--text2);margin-top:3px">
+        <div class="fw-semibold" style="color:var(--text)">Solo palabra completa</div>
+        <div style="font-size:.8rem;color:var(--text);margin-top:3px">
           <i class="bi bi-quote me-1"></i>
           No cuenta si la palabra aparece dentro de otra (ej. "día" no detecta "diálogo" ni "mediodía").
         </div>
@@ -76,14 +76,14 @@
     </div>
 
     <!-- Medios a monitorear -->
-    <div class="p-3 rounded mt-2" style="background:#070d1a;border:1px solid var(--border)">
-      <div class="fw-semibold mb-2">Medios a monitorear</div>
+    <div class="p-3 rounded mt-2" style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
+      <div class="fw-semibold mb-2" style="color:var(--text)">Medios a monitorear</div>
       <div class="d-flex gap-4">
         {% for value, label in media_types_choices %}
         <div class="form-check">
           <input class="form-check-input" type="checkbox" name="media_types" value="{{ value }}"
                  id="mt_{{ value }}" checked>
-          <label class="form-check-label" for="mt_{{ value }}">{{ label }}</label>
+          <label class="form-check-label" for="mt_{{ value }}" style="color:var(--text)">{{ label }}</label>
         </div>
         {% endfor %}
       </div>

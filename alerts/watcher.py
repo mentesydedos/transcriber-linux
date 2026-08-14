@@ -16,7 +16,8 @@ from pathlib  import Path
 from alerts.mailer         import send_immediate, send_daily_report, send_final_report
 from alerts.telegram       import notify_match as tg_notify_match
 from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
-from alerts.channel_types  import channel_type, parse_media_types
+from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID
+from alerts.googlenews     import fetch_articles as gnews_fetch
 
 logger = logging.getLogger('watcher')
 
@@ -24,6 +25,7 @@ BASE_DIR      = Path(__file__).parent.parent
 ALERTS_DB     = BASE_DIR / 'alerts.db'
 TRANS_DB      = BASE_DIR / 'transcriptions.db'
 POLL_INTERVAL = 5   # segundos entre cada ciclo
+NEWS_POLL_MINUTES = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
 
 
 # ── Normalización fonética española ──────────────────────────────────────────
@@ -150,6 +152,27 @@ def _with_context_chunks(tdb, channel_id: int, timestamp: str, text: str) -> str
     return result[:CONTEXT_MAXLEN]
 
 
+# ── Google Noticias ───────────────────────────────────────────────────────────
+def _poll_news_for_search(adb, s, keywords: list[str],
+                           date_from: str | None = None, date_to: str | None = None) -> int:
+    """Consulta Google Noticias por cada keyword de la búsqueda y guarda los
+    artículos nuevos como matches (channel_id=NEWS_CHANNEL_ID, channel_name=
+    la fuente real del artículo). date_from/date_to acotan (usados solo en
+    el fetch histórico inicial); sin fecha trae lo más reciente, y el índice
+    único de matches (search_id, keyword, channel_id, timestamp) ya evita
+    duplicar un artículo visto en un poll anterior."""
+    total = 0
+    for kw in keywords:
+        for art in gnews_fetch(kw, date_from=date_from, date_to=date_to):
+            ts = art['published'].strftime('%Y-%m-%d %H:%M:%S')
+            cur = adb.execute("""INSERT OR IGNORE INTO matches
+                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
+                VALUES (?,?,?,?,?,?,?)""",
+                (s['id'], kw, NEWS_CHANNEL_ID, art['source'], ts, art['title'], art['link']))
+            total += cur.rowcount
+    return total
+
+
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 def _process(adb, tdb, smtp, cfg=None):
     today = date.today().isoformat()
@@ -216,9 +239,31 @@ def _process(adb, tdb, smtp, cfg=None):
             adb.commit()
             if len(hist) < BATCH:
                 break
+        if 'news' in media_types:
+            n_news = _poll_news_for_search(adb, s, keywords, date_from=s['date_start'], date_to=s['date_end'])
+            adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
+            adb.commit()
+            logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_news} artículos de Google Noticias (histórico {s['date_start']}..{s['date_end']}).")
         adb.execute("UPDATE searches SET initialized=1 WHERE id=?", (s['id'],))
         adb.commit()
         logger.info(f"Búsqueda {s['id']} '{s['name']}' inicializada: {total_hist} registros históricos revisados.")
+
+    # 1.5 Re-consultar Google Noticias para búsquedas activas ya inicializadas
+    # (las nuevas ya se cubrieron arriba, en su fetch histórico inicial)
+    news_due = adb.execute(f"""
+        SELECT * FROM searches
+        WHERE status='active' AND initialized=1
+        AND date_start <= ? AND date_end >= ?
+        AND media_types LIKE '%news%'
+        AND (news_last_fetch IS NULL OR news_last_fetch <= datetime('now','localtime','-{NEWS_POLL_MINUTES} minutes'))
+    """, (today, today)).fetchall()
+    for s in news_due:
+        keywords = json.loads(s['keywords'])
+        n_news = _poll_news_for_search(adb, s, keywords)
+        adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
+        adb.commit()
+        if n_news:
+            logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_news} artículos nuevos de Google Noticias.")
 
     # 2. Procesar nuevas transcripciones (delta desde último ID)
     last_id = int(_get_setting(adb, 'watcher_last_id', '0'))

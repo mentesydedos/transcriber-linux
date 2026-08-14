@@ -386,6 +386,10 @@
                  class="match-thumb" title="Ver snapshot y video (±10s)"
                  onclick="openClip({{ s.id }}, {{ m.id }})"
                  onerror="this.style.visibility='hidden'">
+            {% elif m.channel_kind == 'news' %}
+            <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">
+              <i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i>
+            </a>
             {% else %}
             <i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>
             {% endif %}
@@ -571,6 +575,8 @@
     const txt      = m.centered_highlighted || esc(m.centered_text || m.matched_text || '');
     const clipCell = m.channel_kind === 'tv'
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
+      : m.channel_kind === 'news'
+      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original"><i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i></a>`
       : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
     return `<tr style="animation:fadeIn .4s ease">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
