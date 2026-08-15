@@ -6,6 +6,7 @@
 {% for k in kfs %}<input type="hidden" name="kw"   value="{{ k }}">{% endfor %}
 {% for c in cfs %}<input type="hidden" name="ch"   value="{{ c }}">{% endfor %}
 {% for p in pfs %}<input type="hidden" name="prog" value="{{ p }}">{% endfor %}
+{% for m in mfs %}<input type="hidden" name="mt"   value="{{ m }}">{% endfor %}
 {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
 {% if date_to   %}<input type="hidden" name="date_to"   value="{{ date_to }}">{% endif %}
 {% endmacro %}
@@ -36,20 +37,20 @@
     <form method="post" action="/searches/{{ s.id }}/report">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-envelope me-1"></i>Enviar reporte{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-envelope me-1"></i>Enviar reporte{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <form method="post" action="/searches/{{ s.id }}/report_telegram">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-telegram me-1" style="color:#2aabee"></i>Reporte Telegram{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-telegram me-1" style="color:#2aabee"></i>Reporte Telegram{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <form method="post" action="/export">
       <input type="hidden" name="search_ids" value="{{ s.id }}">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <a href="/searches/{{ s.id }}/similarities" class="btn btn-sm btn-outline-secondary">
@@ -140,7 +141,7 @@
   <div class="col-6 col-md-3">
     <div class="stat">
       <div class="stat-val" style="color:var(--orange)" id="total-count">{{ total_all }}</div>
-      {% set any_filter = kfs or cfs or pfs or date_from or date_to %}
+      {% set any_filter = kfs or cfs or pfs or mfs or date_from or date_to %}
       {% if any_filter %}
       <div class="stat-lbl">
         Total · <span style="color:var(--accent);font-weight:700">{{ total }} filtrado{{ 's' if total != 1 }}</span>
@@ -262,7 +263,7 @@
         Coincidencias
         <span class="ms-1 px-2 py-0 rounded" style="background:var(--card2);font-size:.8rem" id="total-badge">{{ total }}</span>
       </span>
-      {% set any_filter = kfs or cfs or pfs or date_from or date_to %}
+      {% set any_filter = kfs or cfs or pfs or mfs or date_from or date_to %}
       {% if any_filter %}
         <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-x-circle me-1"></i>Limpiar filtros
@@ -323,6 +324,29 @@
           {% endfor %}
         </div>
       </div>
+
+      <!-- Medio (multi) -->
+      {% if mt_all|length > 1 %}
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" id="btn-mt">
+          {% if mfs %}Medio ({{ mfs|length }}){% else %}Medio{% endif %}
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:170px">
+          {% for mt in mt_all %}
+          <div class="form-check">
+            <input class="form-check-input fcheck" type="checkbox" name="mt"
+                   value="{{ mt.value }}" id="mt{{ loop.index }}"
+                   data-btn="btn-mt" data-label="Medio"
+                   {{ 'checked' if mt.value in mfs }}>
+            <label class="form-check-label" for="mt{{ loop.index }}" style="font-size:.82rem">
+              {{ mt.label }}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
 
       <!-- Programas EPG (multi) -->
       {% if prog_all %}
@@ -415,7 +439,7 @@
         <tr>
           <td colspan="6" class="text-center py-5" style="color:var(--muted)">
             <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
-            Sin coincidencias{% if kfs or cfs or pfs or date_from or date_to %} con estos filtros{% endif %}
+            Sin coincidencias{% if kfs or cfs or pfs or mfs or date_from or date_to %} con estos filtros{% endif %}
           </td>
         </tr>
         {% endfor %}

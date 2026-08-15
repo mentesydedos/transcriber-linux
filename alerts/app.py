@@ -770,8 +770,11 @@ def create_app() -> Flask:
         return render_template('search_new.html', today=date.today().isoformat(),
                                media_types_choices=MEDIA_TYPES)
 
-    def _match_where(sid, kws, chs, pfs, date_from, date_to):
-        """Construye WHERE + params para la tabla matches con todos los filtros activos."""
+    def _match_where(sid, kws, chs, pfs, mts, date_from, date_to):
+        """Construye WHERE + params para la tabla matches con todos los filtros activos.
+        mts: subconjunto de {'tv','radio','news','youtube'} -- channel_kind no es una
+        columna real (se deriva de channel_id, ver alerts/channel_types.py), así que se
+        arma el mismo rango/valor por SQL en vez de re-consultar fila por fila."""
         conds, params = ['search_id=?'], [sid]
         if kws:
             conds.append(f"keyword IN ({','.join('?'*len(kws))})")
@@ -779,6 +782,19 @@ def create_app() -> Flask:
         if chs:
             conds.append(f"channel_name IN ({','.join('?'*len(chs))})")
             params.extend(chs)
+        if mts:
+            from alerts.channel_types import RADIO_CHANNEL_MIN, YOUTUBE_CHANNEL_MIN, NEWS_CHANNEL_ID
+            mt_conds = []
+            if 'tv' in mts:
+                mt_conds.append(f"(channel_id IS NULL OR channel_id < {RADIO_CHANNEL_MIN})")
+            if 'radio' in mts:
+                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id < {YOUTUBE_CHANNEL_MIN})")
+            if 'news' in mts:
+                mt_conds.append(f"channel_id = {NEWS_CHANNEL_ID}")
+            if 'youtube' in mts:
+                mt_conds.append(f"(channel_id >= {YOUTUBE_CHANNEL_MIN} AND channel_id != {NEWS_CHANNEL_ID})")
+            if mt_conds:
+                conds.append('(' + ' OR '.join(mt_conds) + ')')
         if date_from:
             conds.append("date(timestamp) >= ?"); params.append(date_from)
         if date_to:
@@ -807,10 +823,11 @@ def create_app() -> Flask:
         kfs       = request.args.getlist('kw')
         cfs       = request.args.getlist('ch')
         pfs       = request.args.getlist('prog')
+        mfs       = request.args.getlist('mt')
         date_from = request.args.get('date_from', '')
         date_to   = request.args.get('date_to', '')
 
-        where, params = _match_where(sid, kfs, cfs, pfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
 
         d         = db()
         total     = d.execute(f"SELECT COUNT(*) FROM matches WHERE {where}", params).fetchone()[0]
@@ -824,6 +841,12 @@ def create_app() -> Flask:
                    for m in matches_raw]
         kw_all = d.execute("SELECT DISTINCT keyword FROM matches WHERE search_id=? ORDER BY keyword", (sid,)).fetchall()
         ch_all = d.execute("SELECT DISTINCT channel_name FROM matches WHERE search_id=? ORDER BY channel_name", (sid,)).fetchall()
+        # Solo los medios que esta búsqueda realmente cubre (s.media_types) --
+        # mostrar "YouTube" como filtro en una búsqueda que nunca lo monitorea
+        # daría un filtro que siempre vacía la tabla.
+        from alerts.channel_types import MEDIA_TYPES, parse_media_types
+        _search_mts = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
+        mt_all = [{'value': v, 'label': l} for v, l in MEDIA_TYPES if v in _search_mts]
         prog_all = d.execute("""
             SELECT DISTINCT e.title
             FROM matches m
@@ -880,8 +903,8 @@ def create_app() -> Flask:
             s=s, keywords=json.loads(s['keywords']),
             matches=matches, total=total, page=page, pp=pp,
             pages=max(1, (total-1)//pp+1),
-            kw_all=kw_all, ch_all=ch_all, prog_all=prog_all,
-            kfs=kfs, cfs=cfs, pfs=pfs,
+            kw_all=kw_all, ch_all=ch_all, prog_all=prog_all, mt_all=mt_all,
+            kfs=kfs, cfs=cfs, pfs=pfs, mfs=mfs,
             date_from=date_from, date_to=date_to,
             total_all=total_all,
             kw_stats=kw_stats, ch_stats=ch_stats,
@@ -1221,9 +1244,10 @@ def create_app() -> Flask:
         kfs       = request.form.getlist('kw')
         cfs       = request.form.getlist('ch')
         pfs       = request.form.getlist('prog')
+        mfs       = request.form.getlist('mt')
         date_from = request.form.get('date_from', '')
         date_to   = request.form.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
         d       = db()
         matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC", params).fetchall()
         rows    = d.execute("SELECT key,value FROM settings").fetchall()
@@ -1246,9 +1270,10 @@ def create_app() -> Flask:
         kfs       = request.form.getlist('kw')
         cfs       = request.form.getlist('ch')
         pfs       = request.form.getlist('prog')
+        mfs       = request.form.getlist('mt')
         date_from = request.form.get('date_from', '')
         date_to   = request.form.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
         d       = db()
         matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC", params).fetchall()
         cfg     = {r['key']: r['value'] for r in d.execute("SELECT key,value FROM settings")}
@@ -1514,6 +1539,7 @@ def create_app() -> Flask:
         _exp_kfs       = request.form.getlist('kw')
         _exp_cfs       = request.form.getlist('ch')
         _exp_pfs       = request.form.getlist('prog')
+        _exp_mfs       = request.form.getlist('mt')
         _exp_date_from = request.form.get('date_from', '')
         _exp_date_to   = request.form.get('date_to', '')
         _exp_single    = len(search_ids) == 1   # filtros solo para exportación individual
@@ -1577,8 +1603,8 @@ def create_app() -> Flask:
             if not s:
                 continue
 
-            if _exp_single and any([_exp_kfs, _exp_cfs, _exp_pfs, _exp_date_from, _exp_date_to]):
-                _w, _p = _match_where(sid, _exp_kfs, _exp_cfs, _exp_pfs, _exp_date_from, _exp_date_to)
+            if _exp_single and any([_exp_kfs, _exp_cfs, _exp_pfs, _exp_mfs, _exp_date_from, _exp_date_to]):
+                _w, _p = _match_where(sid, _exp_kfs, _exp_cfs, _exp_pfs, _exp_mfs, _exp_date_from, _exp_date_to)
                 matches = d.execute(
                     f"SELECT * FROM matches WHERE {_w} ORDER BY timestamp ASC", _p
                 ).fetchall()
