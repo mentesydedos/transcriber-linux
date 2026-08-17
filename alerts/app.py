@@ -375,6 +375,12 @@ def _init_db():
         # Última vez que se consultó Google Noticias para esta búsqueda (ver
         # alerts/googlenews.py) -- NULL hasta el primer fetch.
         ('news_last_fetch',  'TEXT'),
+        # Si la misma palabra se repite en el mismo canal dentro de 1 minuto
+        # (misma nota/segmento), contar solo una coincidencia -- ver
+        # alerts/watcher.py _recent_match_exists(). Default 1 (activado) para
+        # que las búsquedas ya creadas también queden con el comportamiento
+        # esperado sin tener que editarlas.
+        ('dedup_channel',    'INTEGER DEFAULT 1'),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -650,7 +656,7 @@ def create_app() -> Flask:
                 FROM matches m
                 JOIN searches s ON m.search_id=s.id
                 JOIN users    u ON s.user_id=u.id
-                ORDER BY m.found_at DESC LIMIT 25
+                ORDER BY m.timestamp DESC LIMIT 25
             """).fetchall()
         else:
             searches = d.execute("""
@@ -668,7 +674,7 @@ def create_app() -> Flask:
             recent = d.execute("""
                 SELECT m.*, s.name as s_name, s.id as s_id
                 FROM matches m JOIN searches s ON m.search_id=s.id
-                WHERE s.user_id=? ORDER BY m.found_at DESC LIMIT 25
+                WHERE s.user_id=? ORDER BY m.timestamp DESC LIMIT 25
             """, (uid,)).fetchall()
 
         today_iso = date.today().isoformat()
@@ -741,6 +747,7 @@ def create_app() -> Flask:
             kw_raw        = request.form.get('keywords', '').strip()
             phonetic      = 1 if request.form.get('phonetic') else 0
             whole_word    = 1 if request.form.get('whole_word') else 0
+            dedup_channel = 1 if request.form.get('dedup_channel') else 0
             d_start       = request.form.get('date_start', '')
             d_end         = request.form.get('date_end', '')
             dmode         = request.form.get('delivery_mode', 'final')
@@ -755,10 +762,11 @@ def create_app() -> Flask:
                 cur = db().execute("""
                     INSERT INTO searches
                       (user_id,name,keywords,phonetic,whole_word,date_start,date_end,
-                       delivery_mode,report_email,status,notify_telegram,media_types)
-                    VALUES (?,?,?,?,?,?,?,?,?,'active',?,?)
+                       delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel)
+                    VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
-                      phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types))
+                      phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types,
+                      dedup_channel))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada. Procesando el histórico…', 'success')
                 # Al detalle, no al dashboard -- ahí ya está el banner de progreso
@@ -833,12 +841,20 @@ def create_app() -> Flask:
         total     = d.execute(f"SELECT COUNT(*) FROM matches WHERE {where}", params).fetchone()[0]
         total_all = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
         matches_raw = d.execute(
-            f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             params + [pp, (page-1)*pp]
         ).fetchall()
         # Enriquece cada match con precise_timestamp y centered_text
         matches = [_enrich_match(m, phonetic=bool(s['phonetic']), whole_word=bool(s['whole_word']))
                    for m in matches_raw]
+        # El ORDER BY de arriba usa el timestamp del chunk (inicio, redondeado
+        # a 30s); precise_timestamp afina dentro de ese chunk según la
+        # posición de la palabra. Como los chunks de canales distintos no
+        # arrancan alineados al mismo segundo, dos matches de chunks
+        # consecutivos pueden invertirse en el momento real que ocurrieron
+        # -- se reordena esta página ya enriquecida por precise_timestamp
+        # (el valor que de hecho se muestra) para que se vea cronológico.
+        matches.sort(key=lambda m: m['precise_timestamp'] or '', reverse=True)
         kw_all = d.execute("SELECT DISTINCT keyword FROM matches WHERE search_id=? ORDER BY keyword", (sid,)).fetchall()
         ch_all = d.execute("SELECT DISTINCT channel_name FROM matches WHERE search_id=? ORDER BY channel_name", (sid,)).fetchall()
         # Solo los medios que esta búsqueda realmente cubre (s.media_types) --
@@ -1121,8 +1137,9 @@ def create_app() -> Flask:
     @app.route('/library/video/<int:num>/<filename>')
     @login_required
     def library_video(num, filename):
-        """Sirve (transcodificando y cacheando la primera vez) un bloque de
-        30 min como MP4 reproducible. send_file soporta Range de forma nativa
+        """Sirve un bloque de 30 min como MP4 reproducible -- directo si ya
+        está finalizado, o remuxeado (sin recodificar, cacheado la primera
+        vez) si todavía es .ts/.mkv. send_file soporta Range de forma nativa
         -- permite adelantar/atrasar el video sin volver a descargarlo entero."""
         from alerts.library import get_channel, get_or_build_clip, _SEG_RE
         if not _SEG_RE.search(filename) or '/' in filename or '..' in filename:
@@ -1172,6 +1189,9 @@ def create_app() -> Flask:
             new_phon   = 1 if request.form.get('phonetic') else 0
             new_whole  = 1 if request.form.get('whole_word') else 0
             new_media  = ','.join(request.form.getlist('media_types')) or 'tv,radio'
+            # No entra en needs_reinit: solo cambia cómo se cuentan las coincidencias
+            # DE AQUÍ EN ADELANTE, no reinterpreta lo ya escaneado.
+            new_dedup  = 1 if request.form.get('dedup_channel') else 0
 
             # Si cambian fechas, palabras, tipo de búsqueda o medios → re-escanear histórico
             needs_reinit = (
@@ -1187,13 +1207,13 @@ def create_app() -> Flask:
                 UPDATE searches SET
                   name=?, keywords=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
-                  initialized=?, media_types=?
+                  initialized=?, media_types=?, dedup_channel=?
                 WHERE id=?
             """, (name, new_kws, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
-                  0 if needs_reinit else s['initialized'], new_media,
+                  0 if needs_reinit else s['initialized'], new_media, new_dedup,
                   sid))
 
             if needs_reinit:
@@ -1249,7 +1269,7 @@ def create_app() -> Flask:
         date_to   = request.form.get('date_to', '')
         where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
         d       = db()
-        matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC", params).fetchall()
+        matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC", params).fetchall()
         rows    = d.execute("SELECT key,value FROM settings").fetchall()
         cfg     = {r['key']: r['value'] for r in rows}
         if not cfg.get('smtp_host'):
@@ -1275,7 +1295,7 @@ def create_app() -> Flask:
         date_to   = request.form.get('date_to', '')
         where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
         d       = db()
-        matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC", params).fetchall()
+        matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC", params).fetchall()
         cfg     = {r['key']: r['value'] for r in d.execute("SELECT key,value FROM settings")}
         token   = cfg.get('tg_token', '')
         # Usa el chat_id personal del dueño de la búsqueda; fallback al global
@@ -1434,6 +1454,8 @@ def create_app() -> Flask:
             # en vez de re-implementar el resaltado (y perder el modo fonético).
             m['centered_highlighted'] = str(_highlight(m.get('centered_text', ''), m.get('keyword', ''),
                                                         phonetic=phonetic, whole_word=whole_word))
+            m['matched_highlighted'] = str(_highlight(m.get('matched_text', ''), m.get('keyword', ''),
+                                                       phonetic=phonetic, whole_word=whole_word))
         return jsonify(matches=enriched, total=total)
 
     @app.route('/api/stats')
@@ -1454,7 +1476,7 @@ def create_app() -> Flask:
                        s.name as s_name, s.id as s_id
                 FROM matches m
                 JOIN searches s ON m.search_id=s.id
-                ORDER BY m.found_at DESC LIMIT 25
+                ORDER BY m.timestamp DESC LIMIT 25
             """).fetchall()
             total_matches = d.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
         else:
@@ -1467,7 +1489,7 @@ def create_app() -> Flask:
                 SELECT m.id, m.keyword, m.channel_name, m.timestamp, m.matched_text,
                        s.name as s_name, s.id as s_id
                 FROM matches m JOIN searches s ON m.search_id=s.id
-                WHERE s.user_id=? ORDER BY m.found_at DESC LIMIT 25
+                WHERE s.user_id=? ORDER BY m.timestamp DESC LIMIT 25
             """, (uid,)).fetchall()
             total_matches = sum(s['mc'] for s in searches)
 

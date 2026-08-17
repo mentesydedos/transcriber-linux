@@ -3,13 +3,16 @@ alerts/library.py — Videoteca: navegar grabaciones históricas de TV por
 canal, hora (cada bloque son 30 min) o programa (título EPG del bloque),
 con reproductor embebido en el dashboard y descarga.
 
-Cada bloque vive primero como `.ts` (video_recorder.py, mientras se graba)
-y luego se convierte a `.mp4` con faststart (finalize_video.py, una vez
-cerrado) -- ver el plan de "mejor compresión + MP4 descargable"
-(2026-08-10). Este módulo reconoce ambas extensiones: `.mp4` ya finalizado
-se sirve directo (sin ffmpeg de por medio); `.ts` (el bloque más reciente,
-que el recorder puede seguir teniendo abierto, o historial de antes de
-este cambio) usa el pipeline de transcodificación bajo demanda de siempre.
+Cada bloque vive primero como `.ts`/`.mkv` (video_recorder.py, mientras se
+graba) y luego se remuxea a `.mp4` con faststart (finalize_video.py, una
+vez cerrado, sin recodificar -- `-c copy`) -- ver el plan de "mejor
+compresión + MP4 descargable" (2026-08-10). Este módulo reconoce ambas
+extensiones: `.mp4` ya finalizado se sirve SIEMPRE directo (sin ffmpeg de
+por medio, sin importar el canal/códec -- AV1 y H264 los decodifica el
+navegador del cliente de forma nativa); `.ts`/`.mkv` (el bloque más
+reciente, que el recorder puede seguir teniendo abierto) se remuxea al
+vuelo (cacheado la primera vez) para obtener faststart, también sin
+recodificar.
 
 Solo TV: los canales de radio no graban audio de forma permanente (ver
 worker.py/transcriber_parakeet.py — solo se transcribe y se descarta), así
@@ -26,14 +29,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 M3U_PATH  = BASE_DIR / 'TV audio.m3u'
 
 # Canales <= este número graban por GPU/NVENC (ver video_recorder.py,
-# NVENC_LIMIT) -- históricamente HEVC, ahora AV1 (ver el plan del
-# 2026-08-10). Ninguno de los dos tiene soporte universal en navegador
-# (Chrome/Firefox no los reproducen nativamente sin hardware/flags), así
-# que esos SÍ necesitan transcodificarse a H264 para la vista previa en el
-# navegador -- la descarga, en cambio, sirve el archivo nativo tal cual
-# (mejor compresión, los reproductores de escritorio sí lo soportan bien).
-# El resto graba ya en H264: no hace falta transcodificar nada, solo
-# servir el archivo.
+# NVENC_LIMIT) en AV1 (ver el plan del 2026-08-10). AV1 tiene decodificación
+# nativa en todos los navegadores modernos (Chrome/Firefox/Edge desde hace
+# años, Safari 17+), así que YA NO se transcodifica a H264 para la vista
+# previa -- ver get_or_build_clip(). Esta constante queda solo por si algún
+# día se necesita distinguir el pipeline de grabación por canal.
 GPU_CHANNEL_MAX = 8
 
 _FOLDER_RE = re.compile(r'^canal_(\d+)_(.+)$')
@@ -142,23 +142,24 @@ def _cache_path(channel_num: int, filename: str) -> Path:
 
 
 def get_or_build_clip(channel_num: int, folder: Path, filename: str,
-                       timeout: int = 1200) -> Path | None:
+                       timeout: int = 120) -> Path | None:
     """Devuelve un .mp4 reproducible en navegador del bloque `filename`.
 
-    Camino rápido (sin ffmpeg): canal H264 + bloque ya finalizado a .mp4
-    por finalize_video.py -- se sirve el archivo tal cual, faststart y
-    codecs de navegador ya listos.
+    Camino rápido (sin ffmpeg): bloque ya finalizado a .mp4 por
+    finalize_video.py -- se sirve el archivo tal cual (sin importar el
+    canal/códec: H264 y AV1 los decodifica el navegador del cliente de
+    forma nativa), faststart y codecs ya listos.
 
-    Camino con transcodificación (cacheada la primera vez): canales
-    GPU (AV1/HEVC, ver GPU_CHANNEL_MAX -- sin soporte universal en
-    navegador) sin importar el contenedor de origen, o cualquier bloque
-    que todavía sea .ts (el más reciente, no finalizado todavía)."""
+    Camino con remux (cacheado la primera vez, sin recodificar -- misma
+    idea que finalize_video.py): bloque que todavía es .ts/.mkv (el más
+    reciente, no finalizado todavía). Solo reempaqueta el contenedor para
+    obtener faststart; el trabajo de decodificar lo sigue haciendo el
+    navegador del cliente, no este servidor."""
     src = folder / filename
     if not src.exists():
         return None
 
-    is_gpu_channel = channel_num <= GPU_CHANNEL_MAX
-    if src.suffix == ".mp4" and not is_gpu_channel:
+    if src.suffix == ".mp4":
         return src
 
     out = _cache_path(channel_num, filename)
@@ -166,11 +167,6 @@ def get_or_build_clip(channel_num: int, folder: Path, filename: str,
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp.mp4")
-
-    if is_gpu_channel:
-        vcodec_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
-    else:
-        vcodec_args = ["-c:v", "copy"]
 
     def _run(with_audio: bool) -> bool:
         cmd = ["ffmpeg", "-y", "-i", str(src),
@@ -181,9 +177,9 @@ def get_or_build_clip(channel_num: int, folder: Path, filename: str,
             # (-c:a aac al capturar, ver video_recorder.py) sin importar el
             # códec de origen del canal -- re-codificar aquí era trabajo
             # desperdiciado (30 min de audio de más en cada bloque nuevo).
-            cmd += ["-map", "0:a:0", *vcodec_args, "-c:a", "copy"]
+            cmd += ["-map", "0:a:0", "-c:v", "copy", "-c:a", "copy"]
         else:
-            cmd += [*vcodec_args, "-an"]
+            cmd += ["-c:v", "copy", "-an"]
         cmd += ["-movflags", "+faststart", str(tmp), "-loglevel", "error"]
         try:
             r = subprocess.run(cmd, timeout=timeout, stderr=subprocess.DEVNULL)

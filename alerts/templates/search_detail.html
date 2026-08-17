@@ -390,7 +390,7 @@
       </colgroup>
       <thead>
         <tr>
-          <th>Detectado</th>
+          <th>Fecha y hora</th>
           <th>Video</th>
           <th>Canal</th>
           <th>Programa (EPG)</th>
@@ -400,9 +400,9 @@
       </thead>
       <tbody>
         {% for m in matches %}
-        <tr>
+        <tr data-ts="{{ m.precise_timestamp or m.timestamp or '' }}">
           <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
-            {{ m.found_at[:19] }}
+            {{ m.precise_timestamp[:19] if m.precise_timestamp else m.timestamp[:19] }}
           </td>
           <td class="text-center" style="vertical-align:middle">
             {% if m.channel_kind == 'tv' %}
@@ -430,9 +430,10 @@
             <span class="kw" style="white-space:nowrap">{{ m.keyword }}</span>
           </td>
           <td style="vertical-align:middle">
-            <div class="mtext mtext-wide" title="{{ m.matched_text }}">
+            <div class="mtext mtext-wide" data-bs-toggle="tooltip">
               {{ m.centered_text | highlight(m.keyword, s.phonetic, s.whole_word) }}
             </div>
+            <div class="mtext-full" hidden>{{ m.matched_text | highlight(m.keyword, s.phonetic, s.whole_word) }}</div>
           </td>
         </tr>
         {% else %}
@@ -589,20 +590,53 @@
     return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // Tooltip con el texto extendido (con la palabra resaltada) al pasar el
+  // mouse -- container:'body' para que no lo recorte el div con scroll
+  // horizontal de la tabla; el HTML resaltado se toma del sibling oculto
+  // .mtext-full (ya renderizado/escapado por Jinja o por el backend, nunca
+  // armado a mano dentro de un atributo) para no arriesgar romper el HTML.
+  function initTooltips(root) {
+    // Este bloque de <script> se renderiza dos veces en la página (el
+    // template anida "scripts" dentro de "content", como el resto de la
+    // app) -- la primera copia corre ANTES de que cargue bootstrap.bundle.js
+    // (footer). Sin este guard, "new bootstrap.Tooltip(...)" truena ahí y
+    // aborta el resto del script en esa primera pasada. La segunda copia,
+    // ya con bootstrap cargado, sí inicializa todo correctamente.
+    if (typeof bootstrap === 'undefined') return;
+    // El sanitizador HTML de Bootstrap (activo por defecto con html:true)
+    // solo deja pasar una lista fija de etiquetas -- <mark> no está en ella,
+    // así que sin esto la quita ENTERA (etiqueta y palabra resaltada juntas),
+    // dejando un hueco donde debería verse la palabra clave.
+    const allowList = bootstrap.Tooltip.Default.allowList;
+    if (!allowList.mark) allowList.mark = [];
+    root.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+      if (el._tooltipInit) return;
+      el._tooltipInit = true;
+      const full = el.nextElementSibling;
+      new bootstrap.Tooltip(el, {
+        title: full ? full.innerHTML : el.innerHTML,
+        html: true, container: 'body', placement: 'top',
+        customClass: 'mtext-tooltip-pop'
+      });
+    });
+  }
+  initTooltips(document);
+
   function makeRow(m) {
     // Usa centered_text (recortado a 50 palabras antes y 50 después). Lo
     // provee el backend en el endpoint /api/searches/.../matches, ya resaltado
     // en centered_highlighted (misma función que el render inicial -- así
     // funciona igual en modo fonético con keywords de varias palabras).
-    const fat      = m.found_at  ? m.found_at.slice(0, 19)  : '';
-    const rawFull  = esc(m.matched_text || '');
+    const ts       = m.precise_timestamp || m.timestamp || '';
+    const fat      = ts.slice(0, 19);
+    const fullTxt  = m.matched_highlighted || esc(m.matched_text || '');
     const txt      = m.centered_highlighted || esc(m.centered_text || m.matched_text || '');
     const clipCell = m.channel_kind === 'tv'
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
       : m.channel_kind === 'news'
       ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original"><i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i></a>`
       : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
-    return `<tr style="animation:fadeIn .4s ease">
+    return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
       <td class="text-center" style="vertical-align:middle">
         ${clipCell}
@@ -610,7 +644,10 @@
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--green);font-weight:600;font-size:.85rem;vertical-align:middle">${esc(m.channel_name)}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.78rem;color:var(--accent);vertical-align:middle">—</td>
       <td style="vertical-align:middle;overflow:hidden"><span class="kw" style="white-space:nowrap">${esc(m.keyword)}</span></td>
-      <td style="vertical-align:middle"><div class="mtext mtext-wide" title="${rawFull}">${txt}</div></td>
+      <td style="vertical-align:middle">
+        <div class="mtext mtext-wide" data-bs-toggle="tooltip">${txt}</div>
+        <div class="mtext-full" hidden>${fullTxt}</div>
+      </td>
     </tr>`;
   }
 
@@ -629,6 +666,23 @@
     badge._t = setTimeout(() => { badge.style.opacity = '0'; }, 3000);
   }
 
+  // Inserta la fila nueva en su posición cronológica real (por data-ts,
+  // igual que el orden por precise_timestamp del render inicial) en vez de
+  // siempre al principio -- una coincidencia recién detectada (id más alto)
+  // puede corresponder a un momento MÁS VIEJO que lo ya mostrado (p.ej. un
+  // artículo de Google Noticias publicado hace rato pero encontrado hasta
+  // el poll más reciente), y ponerla arriba sin más rompía el orden
+  // cronológico visible.
+  function insertRowSorted(html, ts) {
+    const rows = tbody.querySelectorAll('tr[data-ts]');
+    let ref = null;
+    for (const row of rows) {
+      if ((row.dataset.ts || '') < ts) { ref = row; break; }
+    }
+    if (ref) ref.insertAdjacentHTML('beforebegin', html);
+    else tbody.insertAdjacentHTML('beforeend', html);
+  }
+
   function refresh() {
     {% if not kfs and not cfs and not pfs and not date_from and not date_to and page == 1 %}
     fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId)
@@ -636,12 +690,12 @@
       .then(data => {
         const newMatches = data.matches || [];
         if (newMatches.length > 0) {
-          // Prepend new rows (they come ASC, so reverse for newest-first display)
-          const reversed = newMatches.slice().reverse();
-          reversed.forEach(m => {
+          newMatches.forEach(m => {
             if (m.id > lastId) lastId = m.id;
-            tbody.insertAdjacentHTML('afterbegin', makeRow(m));
+            const ts = m.precise_timestamp || m.timestamp || '';
+            insertRowSorted(makeRow(m), ts);
           });
+          initTooltips(tbody);
           // Update total count displays
           totalCountEls.forEach(el => { el.textContent = data.total; });
           if (headerBadge) headerBadge.textContent = data.total;
@@ -673,15 +727,28 @@
 .matches-table th:first-child,
 .matches-table td:first-child { padding-left:  1.5rem !important; }
 /* Texto centrado en la palabra (±50 palabras de contexto). Wrap en 2 líneas
-   con elipsis si excede; el title del td muestra el chunk completo. */
+   con elipsis si excede; el tooltip (ver initTooltips) muestra el chunk
+   completo, también resaltado. */
 .matches-table .mtext-wide {
-  font-size: .85rem; color: var(--text2);
+  font-size: .85rem; color: var(--text2); cursor: default;
   white-space: normal; overflow: hidden; text-overflow: ellipsis;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   max-width: 100%; line-height: 1.45;
 }
 .matches-table .mtext-wide mark { background: #f97316; color: #fff;
   border-radius: 3px; padding: 0 3px; font-weight: 600; }
+/* Tooltip Bootstrap (container:body, ver initTooltips) con el texto extendido
+   -- ancho default de Bootstrap (200px) es muy angosto para un párrafo. */
+.tooltip.mtext-tooltip-pop .tooltip-inner {
+  max-width: 480px; text-align: left; font-size: .82rem; line-height: 1.5;
+  background: var(--card2); color: var(--text);
+  border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  padding: .6rem .8rem;
+}
+.tooltip.mtext-tooltip-pop .tooltip-inner mark {
+  background: #f97316; color: #fff; border-radius: 3px; padding: 0 3px; font-weight: 600;
+}
+.tooltip.mtext-tooltip-pop .tooltip-arrow::before { border-top-color: var(--border) !important; }
 /* Celda EPG: wrap a 2 líneas con elipsis cuando excede.
    Va aplicado a un <div> dentro del <td> porque -webkit-box no funciona en
    table-cell. */

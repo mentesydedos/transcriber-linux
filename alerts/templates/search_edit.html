@@ -53,6 +53,14 @@
         <small style="color:var(--muted)">("día" no detecta "diálogo" ni "mediodía")</small>
       </label>
     </div>
+    <div class="form-check form-switch mt-2">
+      <input class="form-check-input" type="checkbox" name="dedup_channel" id="dedup_channel"
+             style="width:2.5em;height:1.3em" {{ 'checked' if s.dedup_channel }}>
+      <label class="form-check-label ms-2" for="dedup_channel">
+        Agrupar repeticiones cercanas
+        <small style="color:var(--muted)">(misma palabra y canal en menos de 1 minuto = una sola coincidencia)</small>
+      </label>
+    </div>
   </div>
 
   <div class="card p-4 mb-3">

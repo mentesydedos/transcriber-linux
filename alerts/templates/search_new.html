@@ -75,6 +75,23 @@
       </div>
     </div>
 
+    <!-- Switch agrupar repeticiones cercanas -->
+    <div class="d-flex align-items-start gap-3 p-3 rounded mt-2"
+         style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
+      <div class="form-check form-switch mb-0 mt-1" style="min-width:70px">
+        <input class="form-check-input" type="checkbox" name="dedup_channel" id="sw_dedup"
+               role="switch" style="width:2.75em;height:1.4em;cursor:pointer" checked>
+      </div>
+      <div>
+        <div class="fw-semibold" style="color:var(--text)">Agrupar repeticiones cercanas</div>
+        <div style="font-size:.8rem;color:var(--text);margin-top:3px">
+          <i class="bi bi-arrow-repeat me-1"></i>
+          Si la palabra se repite varias veces en menos de 1 minuto en el mismo canal (misma nota o
+          segmento), cuenta como una sola coincidencia en vez de una por cada mención.
+        </div>
+      </div>
+    </div>
+
     <!-- Medios a monitorear -->
     <div class="p-3 rounded mt-2" style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
       <div class="fw-semibold mb-2" style="color:var(--text)">Medios a monitorear</div>

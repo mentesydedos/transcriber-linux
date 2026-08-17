@@ -62,6 +62,25 @@ def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) ->
     return norm_kw in norm_text
 
 
+DEDUP_WINDOW_SEC = 60  # "1 minuto de espacio por canal" -- ver dedup_channel en searches
+
+def _recent_match_exists(adb, search_id: int, keyword: str, channel_id: int, timestamp: str) -> bool:
+    """True si ya hay una coincidencia guardada para esta misma búsqueda +
+    keyword + canal en el último DEDUP_WINDOW_SEC antes de `timestamp`. Se
+    usa para que una palabra repetida varias veces en la misma nota/segmento
+    (varios chunks de 30s seguidos mencionándola) cuente como una sola
+    coincidencia, no una por cada chunk. Se procesan los chunks en orden
+    cronológico, así que cualquier coincidencia previa dentro de la ventana
+    ya está guardada al momento de esta consulta."""
+    row = adb.execute("""
+        SELECT 1 FROM matches
+        WHERE search_id=? AND keyword=? AND channel_id=?
+          AND timestamp > datetime(?, ?) AND timestamp <= ?
+        LIMIT 1
+    """, (search_id, keyword, channel_id, timestamp, f'-{DEDUP_WINDOW_SEC} seconds', timestamp)).fetchone()
+    return row is not None
+
+
 # ── Conexiones ────────────────────────────────────────────────────────────────
 # cache_size/mmap_size más grandes que el default -- el watcher escanea
 # transcriptions.db en un loop constante (POLL_INTERVAL), y ahora compite con
@@ -187,6 +206,7 @@ def _process(adb, tdb, smtp, cfg=None):
         phonetic    = bool(s['phonetic'])
         whole_word  = bool(s['whole_word'])
         media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
+        dedup_on    = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
         BATCH   = 2000
 
         # Contar total de registros en el rango para mostrar progreso
@@ -224,6 +244,8 @@ def _process(adb, tdb, smtp, cfg=None):
                     continue
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
+                        if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
+                            continue
                         ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
                         adb.execute("""INSERT OR IGNORE INTO matches
                             (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
@@ -302,8 +324,11 @@ def _process(adb, tdb, smtp, cfg=None):
                 keywords   = json.loads(s['keywords'])
                 phonetic   = bool(s['phonetic'])
                 whole_word = bool(s['whole_word'])
+                dedup_on   = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
+                        if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
+                            continue
                         # El chunk siguiente casi nunca existe todavía en este
                         # punto (se procesa ~al momento) -- se agrega si ya
                         # llegó, si no cae al texto del chunk solo, sin error.
