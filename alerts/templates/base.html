@@ -79,7 +79,13 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system,Bli
 .sidebar hr { border-color: var(--border); margin: .5rem .75rem; }
 
 /* ── Cards ── */
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+/* Bootstrap fija su propio color de texto en .card/.card-header/.card-body
+   (via --bs-body-color, #212529 -- pensado para fondo claro) sin importar
+   este tema; sin este color explícito, cualquier texto dentro de una card
+   que no traiga su propio color inline queda casi invisible sobre fondo
+   oscuro (texto oscuro sobre fondo oscuro). */
+.card { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; }
+.card-header, .card-body, .card-footer { color: var(--text); }
 .card-header { background: transparent; border-bottom: 1px solid var(--border); }
 .card-footer { background: transparent; border-top: 1px solid var(--border); }
 
