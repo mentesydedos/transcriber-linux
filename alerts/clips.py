@@ -8,7 +8,14 @@ segmento (no siempre alineado a :00/:30, porque un reconnect de ffmpeg abre
 un archivo nuevo en el momento del reinicio). Por eso la ubicación del
 segmento correcto se hace por nombre de archivo + duración real (ffprobe),
 no asumiendo bloques fijos de 1800s.
+
+cleanup_video.py borra localmente los bloques más viejos para no llenar el
+disco (ver ese archivo) -- pero backup_nas2.py ya los respalda al NAS
+148.201.38.42 antes de que eso pase (mismo nombre de archivo, reorganizados
+por fecha/bloque de 30 min en vez de por canal). Cuando el bloque local ya
+no existe, se busca ahí antes de rendirse -- ver _nas_segments_for_day().
 """
+import os
 import re
 import subprocess
 import tempfile
@@ -17,6 +24,7 @@ from pathlib import Path
 
 BASE_DIR  = Path(__file__).parent.parent
 VIDEO_DIR = BASE_DIR / 'output_video'
+NAS_ROOT  = Path(os.environ.get("BACKUP_NAS2_ROOT", "/mnt/nas2-tv/videos 720x480"))
 CACHE_DIR = BASE_DIR / 'alerts' / 'cache' / 'clips'
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +55,29 @@ def _segment_start(path: Path):
     return datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}", "%Y-%m-%d %H:%M")
 
 
-def _list_segments(folder: Path) -> list[tuple[datetime, Path]]:
+def _nas_segments_for_day(channel_folder_name: str, day) -> list[tuple[datetime, Path]]:
+    """Bloques respaldados por backup_nas2.py para ESE día -- reorganizados
+    ahí en NAS_ROOT/YYYY-MM-DD/YYYY-MM-DD_HH-MM_HH-MM/<mismo nombre de
+    archivo que en local>. Silencioso si el NAS no está montado/accesible
+    (nunca debe tronar solo porque la red esté lenta o caída)."""
+    date_dir = NAS_ROOT / day.isoformat()
+    segs = []
+    try:
+        if not date_dir.is_dir():
+            return []
+        for block_dir in date_dir.iterdir():
+            if not block_dir.is_dir():
+                continue
+            for p in block_dir.glob(f"{channel_folder_name}_*.mp4"):
+                dt = _segment_start(p)
+                if dt:
+                    segs.append((dt, p))
+    except OSError:
+        return []
+    return segs
+
+
+def _list_segments(folder: Path, around: datetime | None = None) -> list[tuple[datetime, Path]]:
     # .mp4 (finalize_video.py) y .ts/.mkv (bloque activo, o historial de
     # antes de ese cambio) pueden convivir en la misma carpeta -- ver el
     # plan de "mejor compresión + MP4 descargable" (2026-08-10).
@@ -56,6 +86,18 @@ def _list_segments(folder: Path) -> list[tuple[datetime, Path]]:
         dt = _segment_start(p)
         if dt:
             segs.append((dt, p))
+    if around is not None:
+        # cleanup_video.py puede haber borrado el bloque local -- se
+        # completa con lo que haya en el NAS para ese día (± 1 día, por si
+        # el momento cae cerca de medianoche y el segmento real arrancó del
+        # otro lado). Se evitan duplicados por nombre de archivo.
+        seen = {p.name for _, p in segs}
+        for delta in (0, -1, 1):
+            day = (around + timedelta(days=delta)).date()
+            for dt, p in _nas_segments_for_day(folder.name, day):
+                if p.name not in seen:
+                    segs.append((dt, p))
+                    seen.add(p.name)
     segs.sort(key=lambda x: x[0])
     return segs
 
@@ -94,7 +136,7 @@ def locate_frame(channel_name: str, moment: datetime):
     folder = _channel_folder(channel_name)
     if not folder:
         return None
-    segs = _list_segments(folder)
+    segs = _list_segments(folder, around=moment)
     if not segs:
         return None
     found = _segment_at(segs, moment)
@@ -110,7 +152,7 @@ def _clip_window(channel_name: str, moment: datetime, before: float, after: floa
     folder = _channel_folder(channel_name)
     if not folder:
         return []
-    segs = _list_segments(folder)
+    segs = _list_segments(folder, around=moment)
     if not segs:
         return []
 
