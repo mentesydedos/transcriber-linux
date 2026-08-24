@@ -449,15 +449,26 @@
   </div><!-- /overflow-x:auto -->
 
   {% if pages > 1 %}
-  {% set fp %}{% for k in kfs %}&kw={{ k | urlencode }}{% endfor %}{% for c in cfs %}&ch={{ c | urlencode }}{% endfor %}{% for p in pfs %}&prog={{ p | urlencode }}{% endfor %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}{% endset %}
-  <div class="card-footer d-flex justify-content-between align-items-center py-2 px-4">
+  {% set fp %}{% for k in kfs %}&kw={{ k | urlencode }}{% endfor %}{% for c in cfs %}&ch={{ c | urlencode }}{% endfor %}{% for p in pfs %}&prog={{ p | urlencode }}{% endfor %}{% for m in mfs %}&mt={{ m | urlencode }}{% endfor %}{% if date_from %}&date_from={{ date_from }}{% endif %}{% if date_to %}&date_to={{ date_to }}{% endif %}{% endset %}
+  <div class="card-footer d-flex justify-content-between align-items-center py-2 px-4 flex-wrap gap-2">
     <small style="color:var(--text2)">Página {{ page }} de {{ pages }} · {{ total }} registros</small>
-    <div class="d-flex gap-1">
+    <div class="d-flex align-items-center gap-1">
       {% if page > 1 %}
+        <a href="?page=1{{ fp }}" class="btn btn-sm btn-outline-secondary" title="Primera página">« Primera</a>
         <a href="?page={{ page-1 }}{{ fp }}" class="btn btn-sm btn-outline-secondary">‹ Anterior</a>
       {% endif %}
+      <form class="d-flex align-items-center gap-1 mx-1" data-fp="{{ fp }}"
+            onsubmit="event.preventDefault();
+                      var n = parseInt(this.p.value, 10);
+                      if (n >= 1 && n <= {{ pages }}) window.location = '?page=' + n + this.dataset.fp;">
+        <span style="color:var(--text2);font-size:.8rem">Ir a página</span>
+        <input type="number" name="p" min="1" max="{{ pages }}" value="{{ page }}"
+               class="form-control form-control-sm" style="width:68px">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">Ir</button>
+      </form>
       {% if page < pages %}
         <a href="?page={{ page+1 }}{{ fp }}" class="btn btn-sm btn-outline-secondary">Siguiente ›</a>
+        <a href="?page={{ pages }}{{ fp }}" class="btn btn-sm btn-outline-secondary" title="Última página">Última »</a>
       {% endif %}
     </div>
   </div>
