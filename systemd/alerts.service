@@ -13,12 +13,20 @@ Environment="PYTHONUNBUFFERED=1"
 # Gunicorn detrás de Nginx (ver nginx/alertatv) -- reemplaza al servidor de
 # desarrollo de Flask para soportar ~20 clientes concurrentes. Escucha solo
 # en localhost:8001; Nginx es el único punto de entrada externo, en el
-# puerto 5001 de siempre. --timeout 0 desactiva el watchdog de Gunicorn a
-# propósito: las rutas de streaming (/videowall/stream/, /radiowall/stream/,
-# /videowall/av/) mantienen la conexión abierta indefinidamente por diseño.
+# puerto 5001 de siempre.
+#
+# Las rutas de streaming (/videowall/stream/, /radiowall/stream/,
+# /videowall/av/, /library/video/) YA NO pasan por aquí -- nginx las manda
+# a alerts-stream.service (puerto 8002, --timeout 0, mismo wsgi:app) porque
+# mantienen la conexión abierta indefinidamente por diseño, y eso exigía
+# --timeout 0 aquí también, dejando cualquier request colgada de verdad
+# (ej. un ffmpeg/NAS atorado) ocupando un worker para siempre sin que
+# Gunicorn lo reinicie solo. Con las rutas de larga duración separadas,
+# aquí sí se puede vigilar el timeout normal (2026-08-24, prueba
+# multiusuario -- ver alerts-stream.service para el otro lado).
 # El watcher de alertas (correos/Telegram) YA NO corre aquí -- ver
 # alerts-watcher.service (correr en varios workers duplicaría los envíos).
-ExecStart=/home/transcriber/transcriber-linux/venv/bin/gunicorn --workers 4 --threads 6 --bind 127.0.0.1:8001 --timeout 0 wsgi:app
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/gunicorn --workers 8 --threads 6 --bind 127.0.0.1:8001 --timeout 90 wsgi:app
 Restart=always
 RestartSec=5
 StandardOutput=journal

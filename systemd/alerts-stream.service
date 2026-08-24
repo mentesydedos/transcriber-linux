@@ -1,0 +1,30 @@
+[Unit]
+Description=AlertaTV Streaming (Flask/Gunicorn) - videowall/radiowall/videoteca, conexiones de larga duración
+After=network-online.target transcriber.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Mismo wsgi:app que alerts.service, en otro puerto (8002) -- nginx solo le
+# manda las rutas de larga duración (/videowall/stream/, /radiowall/stream/,
+# /videowall/av/, /library/video/), ver /etc/nginx/sites-enabled/alertatv.
+# --timeout 0 aquí sí es correcto: esas conexiones se mantienen abiertas
+# indefinidamente por diseño (streaming en vivo, o el remux bajo demanda de
+# un bloque de video). Pocos workers porque son pocas conexiones largas,
+# no muchas cortas -- ver alerts.service (puerto 8001) para el resto del
+# dashboard, que sí tiene timeout normal.
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/gunicorn --workers 2 --threads 8 --bind 127.0.0.1:8002 --timeout 0 wsgi:app
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
