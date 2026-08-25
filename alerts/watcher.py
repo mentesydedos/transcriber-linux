@@ -347,16 +347,24 @@ def _process(adb, tdb, smtp, cfg=None):
                     continue
                 if _excluded(text, exclude_words, phonetic, whole_word):
                     continue
-                for kw in keywords:
-                    if _match(text, kw, phonetic, whole_word):
-                        if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
-                            continue
-                        ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
-                        adb.execute("""INSERT OR IGNORE INTO matches
-                            (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
-                            VALUES (?,?,?,?,?,?)""",
-                            (s['id'], kw, row['channel_id'], row['channel_name'],
-                             row['timestamp'], ctx))
+                # Con "agrupar repeticiones cercanas" (dedup_on) activo, varias
+                # keywords que matchean el MISMO fragmento cuentan como una
+                # sola coincidencia -- si no, buscar "rocha" y "rocha moya" en
+                # la misma búsqueda insertaba una fila por cada una para la
+                # idéntica mención real. Sin dedup_on se preserva el detalle
+                # completo (una fila por keyword) para quien sí lo quiera ver.
+                matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
+                if dedup_on:
+                    matching_kws = matching_kws[:1]
+                for kw in matching_kws:
+                    if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
+                        continue
+                    ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
+                    adb.execute("""INSERT OR IGNORE INTO matches
+                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
+                        VALUES (?,?,?,?,?,?)""",
+                        (s['id'], kw, row['channel_id'], row['channel_name'],
+                         row['timestamp'], ctx))
             last_hist_id  = hist[-1]['id']
             total_hist   += len(hist)
             adb.execute(
@@ -435,45 +443,50 @@ def _process(adb, tdb, smtp, cfg=None):
                 dedup_on   = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
                 if _excluded(text, exclude_words, phonetic, whole_word):
                     continue
-                for kw in keywords:
-                    if _match(text, kw, phonetic, whole_word):
-                        if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
-                            continue
-                        # El chunk siguiente casi nunca existe todavía en este
-                        # punto (se procesa ~al momento) -- se agrega si ya
-                        # llegó, si no cae al texto del chunk solo, sin error.
-                        ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
-                        adb.execute("""INSERT OR IGNORE INTO matches
-                            (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
-                            VALUES (?,?,?,?,?,?)""",
-                            (s['id'], kw, row['channel_id'], row['channel_name'],
-                             row['timestamp'], ctx))
+                # Ver mismo comentario en el bloque de histórico más arriba --
+                # con dedup_on, varias keywords que matchean el mismo
+                # fragmento cuentan como una sola coincidencia.
+                matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
+                if dedup_on:
+                    matching_kws = matching_kws[:1]
+                for kw in matching_kws:
+                    if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
+                        continue
+                    # El chunk siguiente casi nunca existe todavía en este
+                    # punto (se procesa ~al momento) -- se agrega si ya
+                    # llegó, si no cae al texto del chunk solo, sin error.
+                    ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
+                    adb.execute("""INSERT OR IGNORE INTO matches
+                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
+                        VALUES (?,?,?,?,?,?)""",
+                        (s['id'], kw, row['channel_id'], row['channel_name'],
+                         row['timestamp'], ctx))
 
-                        base = {
-                            'search_id':   s['id'],
-                            'search_name': s['name'],
-                            'keyword':     kw,
-                            'channel_id':  row['channel_id'],
-                            'channel_name':row['channel_name'],
-                            'timestamp':   row['timestamp'],
-                            'matched_text':ctx,
-                        }
+                    base = {
+                        'search_id':   s['id'],
+                        'search_name': s['name'],
+                        'keyword':     kw,
+                        'channel_id':  row['channel_id'],
+                        'channel_name':row['channel_name'],
+                        'timestamp':   row['timestamp'],
+                        'matched_text':ctx,
+                    }
 
-                        # Email: solo en modo inmediato con correo configurado
-                        if s['delivery_mode'] == 'immediate' and s['report_email']:
-                            immediate_email.append({**base, 'report_email': s['report_email']})
+                    # Email: solo en modo inmediato con correo configurado
+                    if s['delivery_mode'] == 'immediate' and s['report_email']:
+                        immediate_email.append({**base, 'report_email': s['report_email']})
 
-                        # Telegram: siempre que esté activado, sin importar modo de correo
-                        notify_tg = s['notify_telegram'] if 'notify_telegram' in s.keys() else 0
-                        if notify_tg:
-                            if not tg_token:
-                                logger.warning(f"[TG] Búsqueda {s['id']}: notify_telegram=1 pero sin tg_token en ajustes.")
+                    # Telegram: siempre que esté activado, sin importar modo de correo
+                    notify_tg = s['notify_telegram'] if 'notify_telegram' in s.keys() else 0
+                    if notify_tg:
+                        if not tg_token:
+                            logger.warning(f"[TG] Búsqueda {s['id']}: notify_telegram=1 pero sin tg_token en ajustes.")
+                        else:
+                            chat_id = (s['u_tg_chat_id'] if 'u_tg_chat_id' in s.keys() else '') or tg_chat_global
+                            if not chat_id:
+                                logger.warning(f"[TG] Búsqueda {s['id']}: sin chat_id (ni en perfil de usuario ni en ajustes globales).")
                             else:
-                                chat_id = (s['u_tg_chat_id'] if 'u_tg_chat_id' in s.keys() else '') or tg_chat_global
-                                if not chat_id:
-                                    logger.warning(f"[TG] Búsqueda {s['id']}: sin chat_id (ni en perfil de usuario ni en ajustes globales).")
-                                else:
-                                    immediate_telegram.append({**base, 'chat_id': chat_id})
+                                immediate_telegram.append({**base, 'chat_id': chat_id})
         adb.commit()
 
     # 3. Correos inmediatos

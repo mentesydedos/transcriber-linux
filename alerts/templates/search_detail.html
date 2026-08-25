@@ -387,6 +387,7 @@
         <col style="width:194px">  <!-- Programa (EPG) +8 caracteres, wrap a 2 líneas -->
         <col style="width:95px">   <!-- Palabra -->
         <col>                      <!-- Texto transcrito (flexible, recibe el resto) -->
+        <col style="width:40px">   <!-- Eliminar -->
       </colgroup>
       <thead>
         <tr>
@@ -396,11 +397,12 @@
           <th>Programa (EPG)</th>
           <th>Palabra</th>
           <th>Texto transcrito (±50 palabras de contexto)</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {% for m in matches %}
-        <tr data-ts="{{ m.precise_timestamp or m.timestamp or '' }}">
+        <tr data-ts="{{ m.precise_timestamp or m.timestamp or '' }}" data-mid="{{ m.id }}">
           <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">
             {{ m.precise_timestamp[:19] if m.precise_timestamp else m.timestamp[:19] }}
           </td>
@@ -439,10 +441,16 @@
             </div>
             <div class="mtext-full" hidden>{{ m.matched_text | highlight(m.keyword, s.phonetic, s.whole_word) }}</div>
           </td>
+          <td class="text-center" style="vertical-align:middle">
+            <button type="button" class="btn-del-match" title="Eliminar (no relacionado con la búsqueda)"
+                    onclick="deleteMatch({{ s.id }}, {{ m.id }}, this)">
+              <i class="bi bi-trash3"></i>
+            </button>
+          </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="6" class="text-center py-5" style="color:var(--muted)">
+          <td colspan="7" class="text-center py-5" style="color:var(--muted)">
             <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
             Sin coincidencias{% if kfs or cfs or pfs or mfs or date_from or date_to %} con estos filtros{% endif %}
           </td>
@@ -668,7 +676,7 @@
       : m.channel_kind === 'youtube'
       ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)"><i class="bi bi-youtube" style="color:#ff0000"></i></a>`
       : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
-    return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}">
+    return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}" data-mid="${m.id}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
       <td class="text-center" style="vertical-align:middle">
         ${clipCell}
@@ -679,6 +687,12 @@
       <td style="vertical-align:middle">
         <div class="mtext mtext-wide" data-bs-toggle="tooltip">${txt}</div>
         <div class="mtext-full" hidden>${fullTxt}</div>
+      </td>
+      <td class="text-center" style="vertical-align:middle">
+        <button type="button" class="btn-del-match" title="Eliminar (no relacionado con la búsqueda)"
+                onclick="deleteMatch({{ s.id }}, ${m.id}, this)">
+          <i class="bi bi-trash3"></i>
+        </button>
       </td>
     </tr>`;
   }
@@ -790,6 +804,14 @@
   transition: border-color .15s, transform .15s;
 }
 .match-thumb:hover { border-color: var(--green); transform: scale(1.08); }
+
+.btn-del-match {
+  background: none; border: none; padding: .25rem; cursor: pointer;
+  color: var(--text2); font-size: 1rem; line-height: 1; border-radius: 5px;
+  transition: color .15s, background .15s;
+}
+.btn-del-match:hover { color: #ef4444; background: rgba(239,68,68,.12); }
+.btn-del-match:disabled { opacity: .4; cursor: default; }
 </style>
 <script>
 // Actualiza el label del botón de cada dropdown según los checks activos
@@ -844,6 +866,28 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
     videoEl.load();
   });
 })();
+
+// Eliminar manualmente una coincidencia que no tiene relación con lo
+// buscado -- ej. un falso positivo del modo fonético. Borra la fila de la
+// tabla `matches`, no afecta la transcripción original ni futuras búsquedas.
+window.deleteMatch = function(searchId, matchId, btn) {
+  if (!confirm('¿Eliminar esta coincidencia? No se puede deshacer.')) return;
+  btn.disabled = true;
+  fetch('/searches/' + searchId + '/matches/' + matchId + '/delete', { method: 'POST' })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+    .then(function () {
+      var row = document.querySelector('tr[data-mid="' + matchId + '"]');
+      if (row) row.remove();
+      document.querySelectorAll('#total-count').forEach(function (el) {
+        var n = parseInt(el.textContent, 10);
+        if (!isNaN(n)) el.textContent = Math.max(0, n - 1);
+      });
+    })
+    .catch(function () {
+      btn.disabled = false;
+      alert('No se pudo eliminar. Intenta de nuevo.');
+    });
+};
 </script>
 {% endblock %}
 {% endblock %}

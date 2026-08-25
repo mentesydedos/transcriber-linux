@@ -1036,6 +1036,21 @@ def create_app() -> Flask:
                 return ('', 404)
         return send_file(out, mimetype='video/mp4')
 
+    @app.route('/searches/<int:sid>/matches/<int:mid>/delete', methods=['POST'])
+    @login_required
+    def delete_match(sid, mid):
+        """Borra manualmente una coincidencia que no tiene relación real con
+        la búsqueda (falso positivo, ej. del modo fonético) -- no toca la
+        transcripción original ni afecta detecciones futuras, solo esta fila."""
+        s = _get_search(sid)
+        if not s:
+            return jsonify(error='not found'), 404
+        cur = db().execute("DELETE FROM matches WHERE id=? AND search_id=?", (mid, sid))
+        db().commit()
+        if cur.rowcount == 0:
+            return jsonify(error='not found'), 404
+        return jsonify(ok=True)
+
     # ══════════════════════════════════════════════════════════════
     # MONITOR DE SEÑALES (mosaico en vivo)
     # ══════════════════════════════════════════════════════════════
