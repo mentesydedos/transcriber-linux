@@ -16,6 +16,7 @@ Estructura NAS (igual que backup_nas2_radio.py):
 """
 import os
 import re
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -66,26 +67,46 @@ def _nas_path_for(filename: str) -> Path | None:
     return NAS_AUDIO_ROOT / date_str / block / filename
 
 
-def _nas_dates_for_station(num: int) -> set[str]:
-    """Fechas con al menos un bloque de esta estación respaldado en el NAS
-    -- NAS_AUDIO_ROOT está organizado por fecha primero (no por estación),
-    así que hay que recorrer cada carpeta de fecha."""
-    dates = set()
-    if not NAS_AUDIO_ROOT.is_dir():
-        return dates
-    prefix = f"canal_{num:02d}_"
-    for date_dir in NAS_AUDIO_ROOT.iterdir():
-        if not date_dir.is_dir() or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir.name):
-            continue
-        if any(date_dir.glob(f"*/{prefix}*.aac")):
-            dates.add(date_dir.name)
-    return dates
+_FILE_STATION_RE = re.compile(r'^canal_(\d+)_')
+_NAS_INDEX_TTL = 300  # 5 min -- las fechas del NAS solo crecen (backup_nas2_radio.py
+                      # nunca borra, cleanup_nas_radio.py solo borra pasados 30 días,
+                      # un cambio lento), seguro cachear un rato.
+_nas_index_cache: dict[int, set[str]] | None = None
+_nas_index_cache_at: float = 0.0
+
+
+def _nas_station_dates_index() -> dict[int, set[str]]:
+    """{station_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
+    de recorrer las mismas carpetas de fecha una vez POR ESTACIÓN (mismo
+    problema que tenía alerts/library.py con video -- 38 estaciones aquí,
+    así que hubiera escalado todavía peor)."""
+    global _nas_index_cache, _nas_index_cache_at
+    now = time.time()
+    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
+        return _nas_index_cache
+
+    index: dict[int, set[str]] = {}
+    if NAS_AUDIO_ROOT.is_dir():
+        for date_dir in NAS_AUDIO_ROOT.iterdir():
+            if not date_dir.is_dir() or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir.name):
+                continue
+            for block_dir in date_dir.iterdir():
+                if not block_dir.is_dir():
+                    continue
+                for f in block_dir.glob("canal_*.aac"):
+                    m = _FILE_STATION_RE.match(f.name)
+                    if m:
+                        index.setdefault(int(m.group(1)), set()).add(date_dir.name)
+
+    _nas_index_cache = index
+    _nas_index_cache_at = now
+    return index
 
 
 def list_dates(num: int) -> list[str]:
     """Fechas (YYYY-MM-DD) con al menos un bloque grabado, local (el bloque
     en curso) o en el NAS, más reciente primero."""
-    dates = _nas_dates_for_station(num)
+    dates = set(_nas_station_dates_index().get(num, set()))
     folder = _local_folder(num)
     if folder is not None:
         for p in folder.glob("*.aac"):

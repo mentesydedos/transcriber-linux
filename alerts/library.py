@@ -32,6 +32,7 @@ muestre todo el historial disponible, no solo lo que sigue en disco local.
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 BASE_DIR  = Path(__file__).parent.parent
@@ -126,20 +127,43 @@ def _nas_path_for(filename: str) -> Path | None:
     return NAS_VIDEO_ROOT / date_str / block / filename
 
 
-def _nas_dates_for_channel(num: int) -> set[str]:
-    """Fechas con al menos un bloque de este canal respaldado en el NAS --
-    NAS_VIDEO_ROOT está organizado por fecha primero (no por canal, ver
-    docstring del módulo), así que hay que recorrer cada carpeta de fecha."""
-    dates = set()
-    if not NAS_VIDEO_ROOT.is_dir():
-        return dates
-    prefix = f"canal_{num:02d}_"
-    for date_dir in NAS_VIDEO_ROOT.iterdir():
-        if not date_dir.is_dir() or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir.name):
-            continue
-        if any(date_dir.glob(f"*/{prefix}*.mp4")):
-            dates.add(date_dir.name)
-    return dates
+_FILE_CHANNEL_RE = re.compile(r'^canal_(\d+)_')
+_NAS_INDEX_TTL = 300  # 5 min -- las fechas del NAS solo crecen (backup_nas2.py
+                      # nunca borra), nunca desaparecen entre una consulta y
+                      # la siguiente dentro de la ventana de cache, así que
+                      # cachear es seguro.
+_nas_index_cache: dict[int, set[str]] | None = None
+_nas_index_cache_at: float = 0.0
+
+
+def _nas_channel_dates_index() -> dict[int, set[str]]:
+    """{channel_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
+    de recorrer las mismas carpetas de fecha una vez POR CANAL -- antes
+    list_dates() escaneaba el NAS entero para un solo canal (~165ms medido
+    con 18 días de historial), y la página de canal se volvía más lenta día
+    a día conforme crecía el respaldo. Este índice se arma una vez y se
+    reusa para los 26 canales."""
+    global _nas_index_cache, _nas_index_cache_at
+    now = time.time()
+    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
+        return _nas_index_cache
+
+    index: dict[int, set[str]] = {}
+    if NAS_VIDEO_ROOT.is_dir():
+        for date_dir in NAS_VIDEO_ROOT.iterdir():
+            if not date_dir.is_dir() or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir.name):
+                continue
+            for block_dir in date_dir.iterdir():
+                if not block_dir.is_dir():
+                    continue
+                for f in block_dir.glob("canal_*.mp4"):
+                    m = _FILE_CHANNEL_RE.match(f.name)
+                    if m:
+                        index.setdefault(int(m.group(1)), set()).add(date_dir.name)
+
+    _nas_index_cache = index
+    _nas_index_cache_at = now
+    return index
 
 
 def list_dates(channel: dict) -> list[str]:
@@ -151,7 +175,7 @@ def list_dates(channel: dict) -> list[str]:
         m = _SEG_RE.search(p.name)
         if m:
             dates.add(m.group(1))
-    dates |= _nas_dates_for_channel(channel["num"])
+    dates |= _nas_channel_dates_index().get(channel["num"], set())
     return sorted(dates, reverse=True)
 
 

@@ -10,13 +10,23 @@ clave -- es el registro completo, útil para leer/repasar lo que se dijo en
 un canal en una fecha, sin tener que armar una búsqueda primero.
 """
 import sqlite3
+import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from alerts.channel_types import channel_type
 
 BASE_DIR = Path(__file__).parent.parent
 TRANS_DB = BASE_DIR / 'transcriptions.db'
+
+# list_channels() hace COUNT(*)/MAX(timestamp)/MAX(channel_name) agrupado
+# sobre TODA la tabla (4.8M+ filas y creciendo) -- MAX(channel_name) en
+# particular no puede aprovechar ningún índice, así que cada llamada
+# recorre la tabla entera (~9s medido). Se cachea unos minutos -- es la
+# portada de navegación, no necesita reflejar el segundo exacto.
+_CHANNELS_CACHE_TTL = 180
+_channels_cache: list[dict] | None = None
+_channels_cache_at: float = 0.0
 
 
 def _tdb() -> sqlite3.Connection:
@@ -30,6 +40,11 @@ def list_channels() -> list[dict]:
     MAX(channel_name) es una simplificación segura (el nombre es estable
     por canal en la práctica; evita un self-join solo para el caso raro de
     que cambiara)."""
+    global _channels_cache, _channels_cache_at
+    now = time.time()
+    if _channels_cache is not None and now - _channels_cache_at < _CHANNELS_CACHE_TTL:
+        return _channels_cache
+
     conn = _tdb()
     rows = conn.execute("""
         SELECT channel_id, MAX(channel_name) as channel_name,
@@ -49,6 +64,8 @@ def list_channels() -> list[dict]:
             "count": r["n"],
             "last_ts": r["last_ts"],
         })
+    _channels_cache = out
+    _channels_cache_at = now
     return out
 
 
@@ -76,13 +93,18 @@ def list_dates(channel_id: int) -> list[str]:
 
 def list_chunks(channel_id: int, date: str) -> list[dict]:
     """Fragmentos transcritos de `date` en orden cronológico, con la URL del
-    bloque de 30 min correspondiente en Videoteca/Audioteca (si aplica)."""
+    bloque de 30 min correspondiente en Videoteca/Audioteca (si aplica).
+    Rango de timestamp en vez de date(timestamp)=? -- la expresión no puede
+    usar idx_trans_channel_ts (channel_id, timestamp), así que evaluaba
+    date() en TODAS las filas históricas del canal para encontrar las de un
+    solo día; el rango sí acota el índice directo a esas filas."""
+    next_date = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     conn = _tdb()
     rows = conn.execute("""
         SELECT timestamp, text FROM transcriptions
-        WHERE channel_id=? AND date(timestamp)=?
+        WHERE channel_id=? AND timestamp >= ? AND timestamp < ?
         ORDER BY timestamp ASC
-    """, (channel_id, date)).fetchall()
+    """, (channel_id, date, next_date)).fetchall()
     conn.close()
 
     kind = channel_type(channel_id)
