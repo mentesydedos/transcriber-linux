@@ -1036,6 +1036,22 @@ def create_app() -> Flask:
                 return ('', 404)
         return send_file(out, mimetype='video/mp4')
 
+    @app.route('/searches/<int:sid>/matches/<int:mid>/audio_clip.m4a')
+    @login_required
+    def match_audio_clip(sid, mid):
+        """Clip de audio (±10s) centrado en una coincidencia de radio --
+        misma idea que match_clip para TV, pero recortado de las
+        grabaciones de radio (local o NAS, ver alerts/audio_clips.py)."""
+        from alerts.audio_clips import extract_clip, CACHE_DIR
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment or m['channel_id'] is None:
+            return ('', 404)
+        out = CACHE_DIR / f'{mid}.m4a'
+        if not out.exists():
+            if not extract_clip(m['channel_id'], moment, out):
+                return ('', 404)
+        return send_file(out, mimetype='audio/mp4')
+
     @app.route('/searches/<int:sid>/matches/<int:mid>/delete', methods=['POST'])
     @login_required
     def delete_match(sid, mid):
