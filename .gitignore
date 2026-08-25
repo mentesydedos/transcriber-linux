@@ -7,6 +7,8 @@
 venv/
 venv-cohere/
 venv-parakeet/
+venv-rag/
+venv-video/
 env/
 .env
 
@@ -18,6 +20,7 @@ output/
 output_video/
 output_cohere/
 output_parakeet/
+output_radio/
 
 # Backups y M3U de pruebas locales
 *.m3u.bak-*

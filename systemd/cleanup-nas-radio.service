@@ -1,0 +1,11 @@
+[Unit]
+Description=Borra del NAS las carpetas de audio de radio con más de 30 días de antigüedad
+RequiresMountsFor=/mnt/nas2-tv
+
+[Service]
+Type=oneshot
+TimeoutStartSec=0
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/cleanup_nas_radio.py

@@ -1,0 +1,11 @@
+[Unit]
+Description=Sube al NAS los bloques de audio de radio ya cerrados y los borra localmente (respaldo, retención 30 días vía cleanup-nas-radio.timer)
+RequiresMountsFor=/mnt/nas2-tv
+
+[Service]
+Type=oneshot
+TimeoutStartSec=0
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/backup_nas2_radio.py
