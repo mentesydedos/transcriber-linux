@@ -1,5 +1,5 @@
 [Unit]
-Description=Transcriber TV 24x7 (Parakeet-CTC-ES, ONNX/CPU) - Canales de noticias con idioma forzado
+Description=Transcriber TV 24x7 (Parakeet-CTC-ES, ONNX/GPU) - Toda la TV (1-26), reemplaza a Parakeet-TDT por el code-switching a ingles
 After=network-online.target
 Wants=network-online.target
 # No correr junto con el servicio Qwen (motor completo, 8 canales): duplicaria trabajo.
@@ -18,18 +18,31 @@ WorkingDirectory=/home/transcriber/transcriber-linux
 # instalados ahí, no hace falta un venv aparte.
 Environment="PATH=/home/transcriber/transcriber-linux/venv-parakeet/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
+# CUDAExecutionProvider de onnxruntime-gpu 1.28 pide CUDA 13/cuDNN 9 y hace
+# dlopen de esas libs en tiempo de ejecucion -- no le basta con que existan
+# en el venv, necesitan estar en LD_LIBRARY_PATH del proceso (torch ya trae
+# estas libs vía pip nvidia-*-cu13, pero no las expone por si solo). Probado
+# 2026-08-11 sin esto: cae a CPUExecutionProvider en silencio (mismo problema
+# que se estaba resolviendo). Con esto: session.get_providers() confirma
+# CUDAExecutionProvider activo -- ver linea de log "ONNX cargado" en
+# logs/manager.log al reiniciar.
+Environment="LD_LIBRARY_PATH=/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cufft/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/nccl/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cusolver/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cusparse/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/nvshmem/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cudnn/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cublas/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cusparselt/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/nvtx/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/nvjitlink/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/curand/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cu13/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cuda_cupti/lib:/home/transcriber/transcriber-linux/venv-parakeet/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib"
 Environment="TRANSCRIBER_ENGINE=ctc_es"
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
-Environment="TRANSCRIBER_MAX_CHANNELS=51"
+Environment="TRANSCRIBER_MAX_CHANNELS=64"
 Environment="TRANSCRIBER_CHUNK_SEC=30"
-# Reemplaza a Cohere en estos mismos 3 canales (2026-08-10): 0%
-# code-switching medido en A/B real contra los mismos audios problemáticos,
-# CTC (no autorregresivo) es mucho más liviano que el AED de Cohere -- ver
-# transcriber_ctc_es.py. Ajustar esta lista si cambia qué canales derivan
-# a otro idioma.
-Environment="TRANSCRIBER_ONLY_CHANNELS=ADN 40,N+,Canal 4"
-# CPU con enorme margen para 3 canales (12.5x tiempo real medido, 4 hilos
-# por chunk de 30s) -- no usa GPU, deja esa VRAM libre para Parakeet/AV1.
+# Extendido a TODA la TV (2026-08-11, antes solo 3 canales de noticias):
+# medido en producción real tras 19h con esos 3 canales, CTC-ES dio 0-0.2%
+# code-switching a inglés vs 3-40% (mayoría 10-25%) en los canales que
+# seguían con Parakeet-TDT -- confirmó que no era un problema aislado.
+# Rango numérico (canales 1-26 = TV) en vez de listar 23 nombres a mano
+# (riesgo de typos con acentos) -- ver CHANNEL_ID_MIN/MAX en manager.py.
+# Radio (27+) se queda con Parakeet-TDT (transcriber-parakeet.service).
+Environment="TRANSCRIBER_CHANNEL_ID_MAX=26"
+# 2 workers de GPU (ver INFERENCE_POOL en manager.py -- CPU se descartó tras
+# 4 workers seguir sin dar abasto y saturar la máquina entera). THREADS aquí
+# solo afecta los nodos que igual corren en CPU dentro del grafo ONNX
+# (preprocesador/memcpy), no la inferencia principal.
 Environment="TRANSCRIBER_CTC_ES_THREADS=4"
 ExecStart=/home/transcriber/transcriber-linux/venv-parakeet/bin/python manager.py
 Restart=always

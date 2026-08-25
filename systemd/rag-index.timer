@@ -1,0 +1,10 @@
+[Unit]
+Description=Corre rag-index.service cada 5 minutos
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

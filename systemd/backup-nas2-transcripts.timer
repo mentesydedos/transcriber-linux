@@ -1,0 +1,10 @@
+[Unit]
+Description=Corre backup-nas2-transcripts.service cada minuto
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

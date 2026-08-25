@@ -62,6 +62,14 @@ M3U_FILE          = os.environ.get("TRANSCRIBER_M3U", "TV audio.m3u")
 MAX_CHANNELS      = int(os.environ.get("TRANSCRIBER_MAX_CHANNELS", "8"))
 SKIP_CHANNELS     = set()
 
+# Filtro por RANGO numérico de channel_id (posición en el M3U, 1-based) --
+# más confiable que filtrar por nombre (ONLY_CHANNELS/SKIP_CHANNEL_NAMES
+# abajo): sin riesgo de typos con acentos/símbolos en 20+ nombres de canal.
+# Pensado para separar TV (1-26) de radio (27+, ver channel_types.py
+# RADIO_CHANNEL_MIN) entre dos motores distintos.
+CHANNEL_ID_MIN    = int(os.environ.get("TRANSCRIBER_CHANNEL_ID_MIN", "1"))
+CHANNEL_ID_MAX    = int(os.environ.get("TRANSCRIBER_CHANNEL_ID_MAX", "999"))
+
 TRANSCRIBER_MODEL = ("nvidia/parakeet-tdt-0.6b-v3" if TRANSCRIBER_ENGINE == "parakeet"
                      else "CohereLabs/cohere-transcribe-03-2026" if TRANSCRIBER_ENGINE == "cohere"
                      else "nvidia/parakeet-ctc-riva-0.6b-es-en" if TRANSCRIBER_ENGINE == "ctc_es"
@@ -102,14 +110,39 @@ elif TRANSCRIBER_ENGINE == "cohere":
         ("gpu", "cuda", None, 1, 12),
     ]
 elif TRANSCRIBER_ENGINE == "ctc_es":
-    # Reemplaza a Cohere en los mismos 3 canales de noticias (2026-08-10):
-    # 0% code-switching medido en A/B real (mismo problema que Cohere
-    # resolvía, ver transcriber_ctc_es.py), pero CTC (no autorregresivo) es
-    # mucho más liviano -- 12.5x tiempo real medido en CPU con 4 hilos por
-    # chunk de 30s, de sobra para solo 3 canales. No usa GPU: deja esa VRAM
-    # libre para Parakeet/el resto en vez de competir por ella.
+    # Extendido de 3 canales de noticias a TODA la TV (2026-08-11): medido en
+    # producción real tras 19h con los 3 canales de noticias -- CTC-ES dio
+    # 0-0.2% code-switching a inglés vs 3-40% (la mayoría 10-25%) en los
+    # canales que seguían con Parakeet-TDT, confirmando que no era un
+    # problema de solo esos 3 canales.
+    #
+    # Historia de esta franja el mismo día (2026-08-11) -- CPU probado y
+    # descartado en producción real, no en teoría:
+    #   1 worker CPU (4 hilos): 12.5x rt AISLADO, pero con 26 canales activos
+    #     un solo worker no alcanzaba ni de cerca.
+    #   2 workers CPU: atraso creciente sin frenar (~1.3 min y subiendo) --
+    #     iba camino a DESCARTAR chunks (CHANNEL_QUEUE_MAXSIZE=3 -> ~90s de
+    #     buffer por canal).
+    #   3 workers CPU: atraso seguía creciendo, más lento (68s -> 82s en 80s).
+    #   4 workers CPU: atraso SEGUÍA creciendo (44.9s -> 82.8s en 140s) Y
+    #     saturó la máquina entera -- load average 96 en 32 núcleos, swap al
+    #     100% (8GB/8GB), competía por CPU con el grabador de video (libx264
+    #     de los 18 canales sin GPU). Cada worker CPU adicional no solo no
+    #     alcanzaba, empeoraba todo lo demás en la máquina.
+    # Cambio a GPU (mismo día): la RTX 4070 tenía margen real y sin usar para
+    # este motor (5GB/12GB VRAM, 8% de utilización de cómputo -- solo Parakeet-
+    # TDT de radio y 8 sesiones NVENC de video). Un worker GPU midió 14.5x rt
+    # con la CPU YA saturada por los 4 workers CPU de la prueba anterior (cota
+    # inferior, no el mejor caso). 2 workers GPU cubren los 26 canales con
+    # margen y liberan ~13 núcleos de CPU que antes competían con el video.
+    # Requiere onnxruntime-gpu (no solo onnxruntime) y las libs CUDA/cuDNN de
+    # los paquetes nvidia-*-cu13 en el venv -- ver LD_LIBRARY_PATH en
+    # systemd/transcriber-ctc-es.service (los providers de ONNX Runtime hacen
+    # dlopen en tiempo de ejecución, no basta con que las libs existan en el
+    # venv si no están en el LD_LIBRARY_PATH del proceso).
     INFERENCE_POOL = [
-        ("cpu-1", "cpu", 4, 1, 6),
+        ("gpu-1", "cuda", 4, 1, 12),
+        ("gpu-2", "cuda", 4, 1, 12),
     ]
 else:
     # OBSOLETO (2026-08-07): motor Qwen, reemplazado por Parakeet+Cohere — ver
@@ -126,6 +159,19 @@ else:
 
 CHANNEL_QUEUE_MAXSIZE = 3          # drop-oldest por canal (3 × 30s = 90s buffer)
 DISPATCHER_POLL_MS    = 50         # granularidad del dispatcher
+
+# Ventana nocturna: pausa TODO (audio + inferencia), igual que ya hace
+# video_recorder.py con su propia ventana (mismos horarios por defecto,
+# env vars con nombre distinto para poder desfasarlas si hiciera falta).
+# El objetivo explícito (2026-08-12) es dejar la máquina libre de carga de
+# transcripción/grabación en vivo durante este rango para que corran tareas
+# de mantenimiento (reindexado RAG, backups, limpieza, etc.) sin competir
+# por CPU/GPU con el pipeline en tiempo real.
+PAUSE_ENABLED  = os.environ.get("TRANSCRIBER_PAUSE_ENABLED", "1") == "1"
+PAUSE_START_H  = int(os.environ.get("TRANSCRIBER_PAUSE_START_H", "0"))
+PAUSE_START_M  = int(os.environ.get("TRANSCRIBER_PAUSE_START_M", "0"))
+PAUSE_END_H    = int(os.environ.get("TRANSCRIBER_PAUSE_END_H", "5"))
+PAUSE_END_M    = int(os.environ.get("TRANSCRIBER_PAUSE_END_M", "30"))
 
 HEALTH_INTERVAL   = 30
 HEARTBEAT_LIMIT   = 180
@@ -325,6 +371,28 @@ def start_inference_worker(iw: InferenceWorker) -> Process:
                 f"device={iw.device} threads={iw.threads} "
                 f"weight={iw.weight} maxsize={iw.maxsize}")
     return p
+
+def _in_pause_window(now=None) -> bool:
+    """Misma lógica que video_recorder.py:_in_pause_window -- ventana que
+    puede cruzar medianoche (start > end)."""
+    if not PAUSE_ENABLED:
+        return False
+    now = now or datetime.now()
+    start = PAUSE_START_H * 60 + PAUSE_START_M
+    end   = PAUSE_END_H * 60 + PAUSE_END_M
+    cur   = now.hour * 60 + now.minute
+    if start <= end:
+        return start <= cur < end
+    return cur >= start or cur < end
+
+
+def _seconds_until_resume(now=None) -> float:
+    now = now or datetime.now()
+    cur = now.hour * 3600 + now.minute * 60 + now.second
+    end = PAUSE_END_H * 3600 + PAUSE_END_M * 60
+    delta = end - cur
+    return delta if delta > 0 else delta + 86400
+
 
 def stop_all(channels: list[Channel], inference_workers: list[InferenceWorker]):
     logger.info("Deteniendo todos los procesos...")
@@ -605,6 +673,8 @@ def main():
     for i, ch in enumerate(raw[:MAX_CHANNELS], start=1):
         if i in SKIP_CHANNELS:
             continue
+        if not (CHANNEL_ID_MIN <= i <= CHANNEL_ID_MAX):
+            continue
         name = ch["name"]
         if ONLY_CHANNELS and name not in ONLY_CHANNELS:
             continue
@@ -613,6 +683,7 @@ def main():
         channels.append(Channel(id=i, name=name, url=ch["url"], headers=ch.get("headers")))
     logger.info(f"Canales activos: {len(channels)} de {len(raw[:MAX_CHANNELS])} "
                 f"(omitidos por índice: {sorted(SKIP_CHANNELS)}, "
+                f"rango_id=[{CHANNEL_ID_MIN},{CHANNEL_ID_MAX}], "
                 f"only={sorted(ONLY_CHANNELS) or '—'}, skip_names={sorted(SKIP_CHANNEL_NAMES) or '—'})")
 
     # Pool de inferencia, cada worker con su propia cola

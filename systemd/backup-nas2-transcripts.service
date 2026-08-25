@@ -1,0 +1,18 @@
+[Unit]
+Description=Respalda transcripciones ya generadas al NAS 148.201.38.42 (mismo formato fecha/bloque que backup-nas2.service para video)
+# Solo respaldo, nunca borra nada local ni sobrescribe lo que ya había en el
+# NAS -- ver backup_nas2_transcripts.py. Requiere que /mnt/nas2-tx esté
+# montado (ver /etc/fstab).
+RequiresMountsFor=/mnt/nas2-tx
+
+[Service]
+Type=oneshot
+# Sin límite -- la primera corrida respalda todo el histórico acumulado
+# (posiblemente cientos de miles de archivos pequeños, lento por CIFS) y
+# puede tardar mucho más que el default de systemd (90s). Corridas
+# posteriores son incrementales y rápidas.
+TimeoutStartSec=0
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/backup_nas2_transcripts.py

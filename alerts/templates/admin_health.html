@@ -10,12 +10,20 @@
     </p>
   </div>
   <form method="get" action="" class="d-flex align-items-center gap-2" onsubmit="return false;">
+    <a href="/admin/health/{{ prev_date }}" class="btn btn-sm btn-outline-secondary" title="Día anterior">
+      <i class="bi bi-chevron-left"></i>
+    </a>
     <select id="dateSelect" class="form-select form-select-sm" style="width:auto">
       <option value="{{ date_str }}" selected>{{ date_str }}{% if is_today %} (hoy, en vivo){% endif %}</option>
       {% for d in dates if d != date_str %}
       <option value="{{ d }}">{{ d }}</option>
       {% endfor %}
     </select>
+    {% if next_date %}
+    <a href="/admin/health/{{ next_date }}" class="btn btn-sm btn-outline-secondary" title="Día siguiente">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+    {% endif %}
   </form>
 </div>
 
@@ -25,10 +33,52 @@ document.getElementById('dateSelect').addEventListener('change', function () {
 });
 </script>
 
+<!-- Estado en vivo -- siempre "ahora mismo", sin importar que dia se este navegando -->
+<div class="card mb-4" style="border-color:var(--purple)">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold"><i class="bi bi-broadcast me-2" style="color:var(--purple)"></i>Estado en vivo (ahora)</span>
+    <span class="section-label">
+      {{ live.en_vivo }} en vivo · {{ live.atrasado }} atrasado · {{ live.caido }} caído
+      — actualizado {{ live.checked_at[11:19] }}
+    </span>
+  </div>
+  {% if live.atrasado > 0 or live.caido > 0 %}
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead><tr><th>#</th><th>Canal</th><th>Tipo</th><th>Última transcripción</th><th>Atraso</th><th>Estado</th></tr></thead>
+      <tbody>
+        {% for ch in live.channels if ch.state != 'en_vivo' %}
+        <tr>
+          <td>{{ '%02d'|format(ch.num) }}</td>
+          <td>{{ ch.name }}</td>
+          <td style="font-size:.75rem;color:var(--muted)">{{ 'TV' if ch.kind == 'tv' else 'Radio' }}</td>
+          <td style="font-size:.75rem;color:var(--muted)">{{ ch.last_ts or 'nunca' }}</td>
+          <td style="font-size:.75rem">{{ (ch.lag_sec // 60) ~ ' min' if ch.lag_sec and ch.lag_sec > 60 else (ch.lag_sec|string ~ 's' if ch.lag_sec is not none else '—') }}</td>
+          <td>
+            {% if ch.state == 'atrasado' %}
+              <span class="badge" style="background:rgba(234,179,8,.15);color:var(--amber)">Atrasado</span>
+            {% else %}
+              <span class="badge" style="background:rgba(239,68,68,.15);color:var(--red)">Caído</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body py-2 px-4" style="font-size:.85rem;color:var(--green)">
+    <i class="bi bi-check-circle me-1"></i> Los {{ live.channels|length }} canales están transcribiendo con normalidad.
+  </div>
+  {% endif %}
+</div>
+
 {% if is_today %}
 <div class="alert alert-info py-2 px-3 mb-4" style="font-size:.8rem">
-  <i class="bi bi-info-circle me-1"></i> Este es el reporte del día en curso, generado en vivo — aún no se guardó
-  (el guardado definitivo ocurre a las 2am, con el día ya cerrado).
+  <i class="bi bi-info-circle me-1"></i> El reporte de abajo es del día en curso (acumulado desde las 00:00), generado en vivo —
+  aún no se guardó (el guardado definitivo ocurre a las 2am, con el día ya cerrado). El bloque de arriba
+  ("Estado en vivo") es distinto: muestra el atraso real de este instante, útil para detectar una caída
+  que está pasando ahora mismo, sin esperar a que se resuelva.
 </div>
 {% endif %}
 
@@ -114,7 +164,7 @@ document.getElementById('dateSelect').addEventListener('change', function () {
   <div class="table-responsive">
     <table class="table mb-0">
       <thead>
-        <tr><th>#</th><th>Canal</th><th>Tipo</th><th>Transcripciones</th><th>Primera</th><th>Última</th><th>Reinicios</th><th>Estado</th></tr>
+        <tr><th>#</th><th>Canal</th><th>Tipo</th><th>Transcripciones</th><th>Primera</th><th>Última</th><th>Mayor hueco</th><th>Reinicios</th><th>Estado</th></tr>
       </thead>
       <tbody>
         {% for ch in report.channels.channels %}
@@ -125,6 +175,9 @@ document.getElementById('dateSelect').addEventListener('change', function () {
           <td>{{ ch.transcriptions }}</td>
           <td style="font-size:.75rem;color:var(--muted)">{{ ch.first_ts or '—' }}</td>
           <td style="font-size:.75rem;color:var(--muted)">{{ ch.last_ts or '—' }}</td>
+          <td style="font-size:.75rem;{% if ch.max_gap_sec and ch.max_gap_sec > 300 %}color:var(--amber);font-weight:600{% else %}color:var(--muted){% endif %}">
+            {{ (ch.max_gap_sec // 60) ~ ' min' if ch.max_gap_sec and ch.max_gap_sec > 60 else (ch.max_gap_sec|string ~ 's' if ch.max_gap_sec else '—') }}
+          </td>
           <td>{{ ch.restart_count if ch.restart_count is not none else '—' }}</td>
           <td>
             {% if ch.integrity == 'ok' %}

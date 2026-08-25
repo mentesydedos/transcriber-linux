@@ -12,16 +12,39 @@ Exporta:
       {"type":"error","message":"…"}
   RANGOS, SYSTEM_PROMPT
 """
+import os
 import re
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from search import search   # FTS5 wrapper existente
+import requests
 
 LLM_MODEL    = "models/llm/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
 LLM_THREADS  = 8
 LLM_CTX      = 4096
 LLM_MAX_TOK  = 512
+
+# Retrieval: rag-api.service (busqueda hibrida FTS5+vectores sobre
+# rag_index.db, ver rag_search.py/rag_api.py) -- reemplaza al FTS5 puro de
+# search.py (2026-08-11). Corre siempre en esta misma maquina, ya caliente
+# (~30-50ms por consulta) -- llamada HTTP en vez de import directo porque
+# rag_search.py vive en venv-rag (sentence-transformers/torch), un venv
+# separado del que usa este proceso (alerts.service corre bajo venv/).
+RAG_API_URL   = os.environ.get("RAG_API_URL", "http://148.201.38.17:8765/search")
+_token_file   = Path(os.environ.get("RAG_API_TOKEN_FILE", "/home/transcriber/.rag-api-token"))
+RAG_API_TOKEN = _token_file.read_text().strip() if _token_file.exists() else None
+
+
+def search(query: str, canal: str = None, desde: str = None, hasta: str = None,
+           limite: int = 20, contexto: bool = False):
+    """Retrocompatible con la firma de search.py -- ahora llama a rag-api.service."""
+    headers = {"X-RAG-Token": RAG_API_TOKEN} if RAG_API_TOKEN else {}
+    resp = requests.post(RAG_API_URL, headers=headers, timeout=10, json={
+        "q": query, "k": limite, "channel_name": canal, "since": desde, "until": hasta,
+    })
+    resp.raise_for_status()
+    return resp.json()["results"]
 
 _llm      = None
 _llm_lock = threading.Lock()
@@ -120,14 +143,18 @@ def ask_stream(question: str, rango: str = "24h",
         return
 
     top_n = max(3, min(int(top_n or 15), 30))
-    fts_q = extract_keywords(question)
     desde = rango_to_cutoff(rango)
 
+    # Pregunta completa en lenguaje natural, sin extraer keywords -- rag-api
+    # ya hace su propia busqueda hibrida (FTS5 + embeddings semanticos), y el
+    # texto natural rinde mejor para la parte semantica que un query tipo
+    # "termino1* OR termino2*" (eso era necesario solo para el FTS5 puro de
+    # antes, ver extract_keywords -- se deja la funcion por si se usa en otro lado).
     try:
-        rows = search(query=fts_q, canal=canal or None,
+        rows = search(query=question, canal=canal or None,
                       desde=desde, hasta=None, limite=top_n)
     except Exception as e:
-        yield {"type": "error", "message": f"FTS: {e}"}
+        yield {"type": "error", "message": f"retrieval: {e}"}
         return
 
     src_items = [{"channel_name": r["channel_name"],

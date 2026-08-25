@@ -1,0 +1,31 @@
+[Unit]
+Description=API de retrieval (FTS5+vectores) sobre transcriptions.db para preguntas en lenguaje natural
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv-rag/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Bind solo a la IP LAN (no 0.0.0.0) -- la maquina de IA local en la LAN le
+# pega a esto para pedir contexto real antes de responder. Autenticacion por
+# header X-RAG-Token, ver /home/transcriber/.rag-api-token (chmod 600).
+# --preload: carga el modelo de embeddings UNA vez en el proceso maestro
+# antes de bifurcar los workers (copy-on-write) -- evita que cada worker
+# pague ~10-17s de carga en su primera consulta despues de un reinicio.
+ExecStart=/home/transcriber/transcriber-linux/venv-rag/bin/gunicorn \
+    --workers 2 \
+    --preload \
+    --bind 148.201.38.17:8765 \
+    --timeout 60 \
+    rag_api:app
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

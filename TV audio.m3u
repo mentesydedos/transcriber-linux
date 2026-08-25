@@ -106,3 +106,29 @@ https://stream.zeno.fm/urxmpmn1qa0uv
 #EXTINF:-1 tvg-chno="99.5",Romance FM
 #EXTHEADER:Origin: https://romance995.com
 https://stream.zeno.fm/3avzkdt91rhvv
+#EXTINF:-1 tvg-chno="91.5",Zona Tres
+https://stream.promomedios.com:8004/stream
+#EXTINF:-1 tvg-chno="92.3",Fiesta Mexicana
+https://stream.promomedios.com:8002/stream
+#EXTINF:-1 tvg-chno="92.7",Radio Mujer
+https://stream.promomedios.com:8008/stream
+#EXTINF:-1 tvg-chno="105.1",Milenio Bella Musica
+https://stream.promomedios.com:8010/stream
+#EXTINF:-1 tvg-chno="100.3",Heraldo Radio
+https://stream.radiojar.com/21h1m4cch8nwv
+#EXTINF:-1 tvg-chno="101.5",W Radio Guadalajara
+https://playerservices.streamtheworld.com/api/livestream-redirect/WRADIO_GDLAAC.aac
+#EXTINF:-1 tvg-chno="102.3",La Coyotera
+https://streaming.servicioswebmx.com:7058/stream
+#EXTINF:-1 tvg-chno="1150",Radio Metropoli
+https://s2.yesstreaming.net:9088/stream
+#EXTINF:-1 tvg-chno="790",Radio Formula GDL AM
+https://stream.radiojar.com/8a7k0514xp8uv
+#EXTINF:-1 tvg-chno="700",Universal Red AM 700
+https://playerservices.streamtheworld.com/api/livestream-redirect/XEDKR_AMAAC.aac
+#EXTINF:-1 tvg-chno="1250",DK 1250
+https://sp2.servidorrprivado.com:10947/
+#EXTINF:-1 tvg-chno="1340",Frecuencia Deportiva 1340
+https://stream.zeno.fm/r1540b8e408uv
+#EXTINF:-1 tvg-chno="1310",Radio Vital
+https://s2.yesstreaming.net:9097/stream

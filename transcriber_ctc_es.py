@@ -219,7 +219,7 @@ def _is_silent_or_noise(text: str) -> bool:
     return cleaned in markers
 
 # ── Inferencia: preprocesador NeMo + ONNX Runtime + CTC greedy decode ─────────
-def _load_model(logger):
+def _load_model(logger, device="cpu"):
     import yaml
     import onnxruntime as ort
     from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
@@ -235,8 +235,14 @@ def _load_model(logger):
 
     so = ort.SessionOptions()
     so.intra_op_num_threads = ONNX_THREADS
-    session = ort.InferenceSession(str(ONNX_FILE), sess_options=so, providers=["CPUExecutionProvider"])
-    logger.info(f"ONNX cargado: {ONNX_FILE.name} ({ONNX_THREADS} hilos), vocabulario={len(vocab)}")
+    # GPU (2026-08-11): con CPU, 4 workers x 4 hilos no daban abasto para los 26
+    # canales de TV (atraso creciente sin frenar) y saturaban la maquina entera
+    # (load avg 96/32 nucleos, swap al 100%, competia con el grabador de video).
+    # En GPU un solo worker midio 14.5x tiempo real AISLADO -- ver INFERENCE_POOL
+    # en manager.py para la cuenta de cuantos workers hacen falta.
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device in ("cuda", "gpu") else ["CPUExecutionProvider"]
+    session = ort.InferenceSession(str(ONNX_FILE), sess_options=so, providers=providers)
+    logger.info(f"ONNX cargado: {ONNX_FILE.name} providers={session.get_providers()} ({ONNX_THREADS} hilos), vocabulario={len(vocab)}")
     return preprocessor, session, vocab, blank_id
 
 
@@ -274,10 +280,10 @@ def run(audio_queue, model_name: str = None, device: str = "cpu",
     if worker_name is None:
         worker_name = device
     logger = setup_logger(worker_name)
-    logger.info(f"CTC-ES worker '{worker_name}' — device=cpu (ONNX Runtime)")
+    logger.info(f"CTC-ES worker '{worker_name}' — device={device} (ONNX Runtime)")
 
     logger.info("Cargando parakeet-ctc-es (ONNX)...")
-    preprocessor, session, vocab, blank_id = _load_model(logger)
+    preprocessor, session, vocab, blank_id = _load_model(logger, device=device)
 
     logger.info("Pre-calentando el modelo...")
     try:

@@ -1,0 +1,16 @@
+[Unit]
+Description=Respalda bloques de video ya finalizados al NAS 148.201.38.42 (reorganizados por fecha/bloque de 30 min)
+# Solo respaldo, nunca borra nada local -- ver backup_nas2.py. Requiere que
+# /mnt/nas2-tv esté montado (ver /etc/fstab).
+RequiresMountsFor=/mnt/nas2-tv
+
+[Service]
+Type=oneshot
+# Sin límite -- la primera corrida respalda todo el histórico acumulado y
+# puede tardar bastante más que el default de systemd (90s). Corridas
+# posteriores son incrementales y rápidas.
+TimeoutStartSec=0
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/usr/bin/python3 /home/transcriber/transcriber-linux/backup_nas2.py

@@ -1,0 +1,17 @@
+[Unit]
+Description=Indexado incremental de transcriptions.db hacia rag_index.db (busqueda para preguntas en lenguaje natural)
+# No escribe en transcriptions.db (PRAGMA query_only) -- puede correr junto
+# con cualquier motor de transcripcion sin riesgo de contencion.
+
+[Service]
+Type=oneshot
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv-rag/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Primer arranque (backfill de ~2.1M filas historicas) puede tardar horas --
+# igual que backup-nas2-transcripts.service. Corridas siguientes (solo filas
+# nuevas) tardan segundos.
+TimeoutStartSec=0
+ExecStart=/home/transcriber/transcriber-linux/venv-rag/bin/python rag_index.py

@@ -21,7 +21,10 @@ ALERTS_DB   = BASE_DIR / "alerts.db"
 TRANS_DB    = BASE_DIR / "transcriptions.db"
 LOG_DIR     = BASE_DIR / "logs"
 TVHEADEND_HOST = "148.201.38.136"
-NAS_HOST       = "148.201.38.38"
+# NAS activo desde el cutover del 2026-08 (video+transcripciones) -- el viejo
+# (148.201.38.38) tiene una falla de hardware conocida y ya no se usa; seguia
+# apuntado aca, causando un falso "NAS caido" en el reporte todos los dias.
+NAS_HOST       = "148.201.38.42"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS health_reports (
@@ -138,21 +141,50 @@ def _channels_section(date_str: str) -> dict:
         "SELECT channel_id, heartbeat, error_count, restart_count, last_error "
         "FROM channel_status"
     ).fetchall()}
+
+    # Huecos reales dentro del dia (p.ej. una caida de red de 10 min) --
+    # el conteo total del dia (>=20) no los detecta porque el resto del dia
+    # sigue sumando normal. El heartbeat tampoco sirve para esto: solo prueba
+    # que el hilo del worker sigue vivo, no que el audio este fluyendo (se
+    # actualiza cada 30s aunque ffmpeg este en loop de reconexion). Se mide
+    # el hueco real entre transcripciones consecutivas por canal.
+    GAP_THRESHOLD_SEC = 300  # 5 min -- por encima de esto ya no es jitter normal
+    gaps: dict[int, float] = {}
+    rows = conn.execute(
+        "SELECT channel_id, timestamp FROM transcriptions WHERE timestamp LIKE ? "
+        "ORDER BY channel_id, timestamp", (f"{date_str}%",)
+    ).fetchall()
     conn.close()
+    prev_id, prev_ts = None, None
+    for r in rows:
+        cid, ts = r["channel_id"], r["timestamp"]
+        if cid == prev_id and prev_ts:
+            gap = (datetime.fromisoformat(ts) - datetime.fromisoformat(prev_ts)).total_seconds()
+            if gap > gaps.get(cid, 0):
+                gaps[cid] = gap
+        prev_id, prev_ts = cid, ts
 
     out = []
     for c in channels:
         n = counts.get(c["num"], 0)
         first_ts, last_ts = spans.get(c["num"], (None, None))
         st = status.get(c["num"])
+        max_gap = gaps.get(c["num"], 0)
         # Umbral generoso: con CC-first y VAD algunos chunks se saltan aposta,
         # así que "pocas transcripciones" no siempre es una falla -- se marca
         # como sospechoso solo si prácticamente no hubo nada en el día.
-        integrity = "ok" if n >= 20 else ("bajo" if n > 0 else "sin_datos")
+        # Un hueco real por encima del umbral baja "ok" a "bajo" aunque el
+        # total del día sea alto -- ver nota arriba.
+        if n == 0:
+            integrity = "sin_datos"
+        elif n < 20 or max_gap > GAP_THRESHOLD_SEC:
+            integrity = "bajo"
+        else:
+            integrity = "ok"
         out.append({
             "num": c["num"], "name": c["name"], "kind": c["kind"],
             "transcriptions": n, "first_ts": first_ts, "last_ts": last_ts,
-            "integrity": integrity,
+            "integrity": integrity, "max_gap_sec": round(max_gap),
             "restart_count": st["restart_count"] if st else None,
             "error_count": st["error_count"] if st else None,
             "last_error": st["last_error"] if st else None,
@@ -161,6 +193,49 @@ def _channels_section(date_str: str) -> dict:
             "sin_datos": sum(1 for c in out if c["integrity"] == "sin_datos"),
             "bajo": sum(1 for c in out if c["integrity"] == "bajo"),
             "ok": sum(1 for c in out if c["integrity"] == "ok")}
+
+
+# ── Estado en vivo (AHORA, independiente del día que se esté navegando) ──────
+LIVE_ATRASADO_SEC = 120  # linea base normal ~30s; con margen antes de "atrasado"
+LIVE_CAIDO_SEC    = 300  # CHANNEL_QUEUE_MAXSIZE=3 x 30s = ~90s de buffer antes de descartar
+
+def live_status() -> dict:
+    """Atraso REAL de cada canal en este instante -- MAX(timestamp) vs ahora.
+    A diferencia de heartbeat (solo prueba que el hilo del worker sigue vivo)
+    y del conteo diario (ciego mientras la caida sigue en curso, porque recien
+    se nota el hueco cuando llegan datos nuevos DESPUES), esto detecta una
+    caida que esta pasando en este momento, sin esperar a que se resuelva."""
+    channels = _all_channels()
+    conn = _trans_conn()
+    last_seen = {r["channel_id"]: r["last_ts"] for r in conn.execute(
+        "SELECT channel_id, MAX(timestamp) last_ts FROM transcriptions GROUP BY channel_id"
+    ).fetchall()}
+    conn.close()
+
+    now = datetime.now()
+    out = []
+    for c in channels:
+        last_ts = last_seen.get(c["num"])
+        if last_ts:
+            lag = (now - datetime.fromisoformat(last_ts)).total_seconds()
+        else:
+            lag = None
+        if lag is None:
+            state = "caido"
+        elif lag > LIVE_CAIDO_SEC:
+            state = "caido"
+        elif lag > LIVE_ATRASADO_SEC:
+            state = "atrasado"
+        else:
+            state = "en_vivo"
+        out.append({"num": c["num"], "name": c["name"], "kind": c["kind"],
+                     "last_ts": last_ts, "lag_sec": round(lag) if lag is not None else None,
+                     "state": state})
+    return {"checked_at": now.isoformat(sep=" ", timespec="seconds"),
+            "channels": out,
+            "en_vivo": sum(1 for c in out if c["state"] == "en_vivo"),
+            "atrasado": sum(1 for c in out if c["state"] == "atrasado"),
+            "caido": sum(1 for c in out if c["state"] == "caido")}
 
 
 # ── Sección 3: red ────────────────────────────────────────────────────────────
@@ -177,12 +252,12 @@ def _network_section() -> dict:
 def _probable_causes(errors: dict, channels: dict, network: dict) -> list[str]:
     causes = []
     if not network["tvheadend"]["reachable"]:
-        causes.append("TVHeadend (148.201.38.136) inalcanzable en el momento del reporte — "
-                       "revisar la fuente de TV, afecta a los 26 canales.")
+        causes.append(f"TVHeadend ({network['tvheadend']['host']}) inalcanzable en el momento "
+                       "del reporte — revisar la fuente de TV, afecta a los 26 canales.")
     if not network["nas"]["reachable"]:
-        causes.append("NAS (148.201.38.38) inalcanzable — falla de hardware conocida "
-                       "(se ha apagado solo, aparentemente por temperatura); no afecta "
-                       "la grabación/transcripción, que corre en disco local.")
+        causes.append(f"NAS ({network['nas']['host']}) inalcanzable en el momento del reporte "
+                       "— no afecta la grabación/transcripción, que corre en disco local; "
+                       "revisar el respaldo (backup-nas2*.timer) si persiste.")
     for ch in errors["by_channel"]:
         reasons = ", ".join(r["reason"][:60] for r in ch["reasons"][:2])
         causes.append(f"Canal {ch['channel_id']:02d} ({ch['channel_name']}): "
@@ -191,6 +266,11 @@ def _probable_causes(errors: dict, channels: dict, network: dict) -> list[str]:
         if ch["integrity"] == "sin_datos":
             causes.append(f"Canal {ch['num']:02d} ({ch['name']}): sin ninguna transcripción "
                            f"en el día — posible caída total del canal.")
+        elif ch.get("max_gap_sec", 0) > 300:
+            mins = ch["max_gap_sec"] // 60
+            causes.append(f"Canal {ch['num']:02d} ({ch['name']}): hueco de {mins} min sin "
+                           f"transcripción en el día (el total diario se ve normal, pero "
+                           f"hubo un corte real) — revisar journalctl en ese horario.")
     if not causes:
         causes.append("Sin causas de falla identificadas — el sistema operó con normalidad.")
     return causes

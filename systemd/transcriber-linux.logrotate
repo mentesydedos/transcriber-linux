@@ -1,0 +1,10 @@
+/home/transcriber/transcriber-linux/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su transcriber transcriber
+}
