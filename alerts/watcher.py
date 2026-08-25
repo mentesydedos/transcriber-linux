@@ -80,6 +80,17 @@ def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) ->
     return norm_kw in norm_text
 
 
+def _excluded(text: str, exclude_words: list[str], phonetic: bool, whole_word: bool) -> bool:
+    """True si alguna palabra de exclusión aparece en el MISMO texto que
+    disparó el match -- ej. buscar "rocha" (sin whole_word, o incluso con
+    phonetic) excluyendo "reprochar"/"derrochar" (que contienen "rocha"
+    como substring). Reusa _match con las mismas opciones de la búsqueda
+    para que la exclusión sea consistente con cómo se detectó el match."""
+    if not exclude_words:
+        return False
+    return any(_match(text, ex, phonetic, whole_word) for ex in exclude_words)
+
+
 DEDUP_WINDOW_SEC = 60  # "1 minuto de espacio por canal" -- ver dedup_channel en searches
 
 def _recent_match_exists(adb, search_id: int, keyword: str, channel_id: int, timestamp: str) -> bool:
@@ -190,17 +201,22 @@ def _with_context_chunks(tdb, channel_id: int, timestamp: str, text: str) -> str
 
 
 # ── Google Noticias ───────────────────────────────────────────────────────────
-def _poll_news_for_search(adb, s, keywords: list[str],
+def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                            date_from: str | None = None, date_to: str | None = None) -> int:
     """Consulta Google Noticias por cada keyword de la búsqueda y guarda los
     artículos nuevos como matches (channel_id=NEWS_CHANNEL_ID, channel_name=
     la fuente real del artículo). date_from/date_to acotan (usados solo en
     el fetch histórico inicial); sin fecha trae lo más reciente, y el índice
     único de matches (search_id, keyword, channel_id, timestamp) ya evita
-    duplicar un artículo visto en un poll anterior."""
+    duplicar un artículo visto en un poll anterior. exclude_words descarta
+    el artículo si su título contiene alguna palabra excluida."""
+    phonetic   = bool(s['phonetic'])
+    whole_word = bool(s['whole_word'])
     total = 0
     for kw in keywords:
         for art in gnews_fetch(kw, date_from=date_from, date_to=date_to):
+            if _excluded(art['title'], exclude_words, phonetic, whole_word):
+                continue
             ts = art['published'].strftime('%Y-%m-%d %H:%M:%S')
             cur = adb.execute("""INSERT OR IGNORE INTO matches
                 (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
@@ -211,7 +227,7 @@ def _poll_news_for_search(adb, s, keywords: list[str],
 
 
 # ── YouTube ────────────────────────────────────────────────────────────────
-def _poll_youtube_for_search(adb, s, keywords: list[str],
+def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                               date_from: str | None = None, date_to: str | None = None) -> int:
     """Busca videos nuevos en YouTube por cada keyword (YouTube Data API v3),
     descarga y transcribe el audio de cada video NUEVO (CPU, ver
@@ -257,6 +273,8 @@ def _poll_youtube_for_search(adb, s, keywords: list[str],
             except ValueError:
                 published = datetime.now()
             for offset, text in segments:
+                if _excluded(text, exclude_words, bool(s['phonetic']), bool(s['whole_word'])):
+                    continue
                 for kw2 in keywords:
                     if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word'])):
                         # offset como segundos agregados -- cada segmento del mismo
@@ -286,7 +304,8 @@ def _process(adb, tdb, smtp, cfg=None):
         "SELECT * FROM searches WHERE initialized=0 AND status='active'"
     ).fetchall()
     for s in new_searches:
-        keywords    = json.loads(s['keywords'])
+        keywords      = json.loads(s['keywords'])
+        exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
         phonetic    = bool(s['phonetic'])
         whole_word  = bool(s['whole_word'])
         media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
@@ -326,6 +345,8 @@ def _process(adb, tdb, smtp, cfg=None):
                     continue
                 if channel_type(row['channel_id']) not in media_types:
                     continue
+                if _excluded(text, exclude_words, phonetic, whole_word):
+                    continue
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
                         if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
@@ -346,7 +367,8 @@ def _process(adb, tdb, smtp, cfg=None):
             if len(hist) < BATCH:
                 break
         if 'news' in media_types:
-            n_news = _poll_news_for_search(adb, s, keywords, date_from=s['date_start'], date_to=s['date_end'])
+            n_news = _poll_news_for_search(adb, s, keywords, exclude_words,
+                                            date_from=s['date_start'], date_to=s['date_end'])
             adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
             adb.commit()
             logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_news} artículos de Google Noticias (histórico {s['date_start']}..{s['date_end']}).")
@@ -365,7 +387,8 @@ def _process(adb, tdb, smtp, cfg=None):
     """, (today, today)).fetchall()
     for s in news_due:
         keywords = json.loads(s['keywords'])
-        n_news = _poll_news_for_search(adb, s, keywords)
+        exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
+        n_news = _poll_news_for_search(adb, s, keywords, exclude_words)
         adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
         adb.commit()
         if n_news:
@@ -405,10 +428,13 @@ def _process(adb, tdb, smtp, cfg=None):
                 media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
                 if row_type not in media_types:
                     continue
-                keywords   = json.loads(s['keywords'])
+                keywords      = json.loads(s['keywords'])
+                exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
                 phonetic   = bool(s['phonetic'])
                 whole_word = bool(s['whole_word'])
                 dedup_on   = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
+                if _excluded(text, exclude_words, phonetic, whole_word):
+                    continue
                 for kw in keywords:
                     if _match(text, kw, phonetic, whole_word):
                         if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
@@ -593,8 +619,9 @@ def _youtube_loop():
             """, (today, today)).fetchall()
             for s in due:
                 keywords = json.loads(s['keywords'])
+                exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
                 try:
-                    n = _poll_youtube_for_search(adb, s, keywords,
+                    n = _poll_youtube_for_search(adb, s, keywords, exclude_words,
                                                   date_from=s['date_start'], date_to=s['date_end'])
                     if n:
                         logger.info(f"[YouTube] Búsqueda {s['id']} '{s['name']}': {n} coincidencias nuevas.")

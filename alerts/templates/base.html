@@ -208,6 +208,9 @@ a:hover { color: #60a5fa; }
       <a class="nav-link {% if '/audio-library' in request.path %}active{% endif %}" href="/audio-library">
         <i class="bi bi-music-note-list"></i> Audioteca
       </a>
+      <a class="nav-link {% if '/transcript-archive' in request.path %}active{% endif %}" href="/transcript-archive">
+        <i class="bi bi-file-earmark-text"></i> Transcripciones
+      </a>
       <a class="nav-link {% if request.path=='/profile' %}active{% endif %}" href="/profile">
         <i class="bi bi-person-circle"></i> Mi perfil
       </a>

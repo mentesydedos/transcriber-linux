@@ -55,6 +55,20 @@
                 placeholder="presidente&#10;economía&#10;terremoto" required></textarea>
     </div>
 
+    <div class="mb-1">
+      <label class="form-label">
+        Excluir estas palabras <span style="color:var(--muted)">(opcional)</span>
+        <span style="color:var(--muted)">(una por línea o separadas por coma)</span>
+      </label>
+      <textarea name="exclude_words" class="form-control" rows="2"
+                style="font-family:monospace"
+                placeholder="reprochar&#10;derrochar"></textarea>
+      <div style="font-size:.78rem;color:var(--text2);margin-top:.3rem">
+        Si alguna de estas palabras aparece en el mismo fragmento, esa coincidencia no cuenta.
+        Útil cuando la palabra buscada aparece dentro de otra (ej. buscar "rocha" y excluir "reprochar", "derrochar").
+      </div>
+    </div>
+
     <!-- Switch fonética/precisa -->
     <div class="d-flex align-items-start gap-3 p-3 rounded"
          style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">

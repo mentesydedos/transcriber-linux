@@ -37,6 +37,14 @@
       <textarea name="keywords" class="form-control" rows="4"
                 style="font-family:monospace" required>{{ keywords | join('\n') }}</textarea>
     </div>
+    <div class="mb-3">
+      <label class="form-label">Excluir estas palabras <span style="color:var(--muted)">(opcional, una por línea o separadas por coma)</span></label>
+      <textarea name="exclude_words" class="form-control" rows="2"
+                style="font-family:monospace">{{ exclude_words | join('\n') }}</textarea>
+      <div style="font-size:.78rem;color:var(--muted);margin-top:.3rem">
+        Si alguna de estas palabras aparece en el mismo fragmento, esa coincidencia no cuenta.
+      </div>
+    </div>
     <div class="form-check form-switch">
       <input class="form-check-input" type="checkbox" name="phonetic" id="phonetic"
              style="width:2.5em;height:1.3em" {{ 'checked' if s.phonetic }}>

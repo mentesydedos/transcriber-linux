@@ -392,6 +392,11 @@ def _init_db():
         # que las búsquedas ya creadas también queden con el comportamiento
         # esperado sin tener que editarlas.
         ('dedup_channel',    'INTEGER DEFAULT 1'),
+        # Palabras/frases que anulan una coincidencia si aparecen en el MISMO
+        # fragmento de texto -- ej. buscar "rocha" mientras se excluye
+        # "reprochar"/"derrochar" (que la contienen como substring, ver
+        # alerts/watcher.py _excluded()). JSON, igual formato que keywords.
+        ('exclude_words',    "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -756,6 +761,7 @@ def create_app() -> Flask:
         if request.method == 'POST':
             name          = request.form.get('name', '').strip()
             kw_raw        = request.form.get('keywords', '').strip()
+            excl_raw      = request.form.get('exclude_words', '').strip()
             phonetic      = 1 if request.form.get('phonetic') else 0
             whole_word    = 1 if request.form.get('whole_word') else 0
             dedup_channel = 1 if request.form.get('dedup_channel') else 0
@@ -769,13 +775,15 @@ def create_app() -> Flask:
             if not all([name, kw_raw, d_start, d_end]):
                 flash('Nombre, palabras y fechas son obligatorios.', 'danger')
             else:
-                kws = [k.strip() for k in re.split(r'[\n,]+', kw_raw) if k.strip()]
+                kws  = [k.strip() for k in re.split(r'[\n,]+', kw_raw) if k.strip()]
+                excl = [e.strip() for e in re.split(r'[\n,]+', excl_raw) if e.strip()]
                 cur = db().execute("""
                     INSERT INTO searches
-                      (user_id,name,keywords,phonetic,whole_word,date_start,date_end,
+                      (user_id,name,keywords,exclude_words,phonetic,whole_word,date_start,date_end,
                        delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel)
-                    VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
+                      json.dumps(excl, ensure_ascii=False),
                       phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types,
                       dedup_channel))
                 db().commit()
@@ -1231,6 +1239,25 @@ def create_app() -> Flask:
             return ('', 404)
         return send_file(path, as_attachment=True, download_name=filename)
 
+    @app.route('/transcript-archive')
+    @login_required
+    def transcript_archive():
+        from alerts.transcript_archive import list_channels
+        return render_template('transcript_archive.html', channels=list_channels())
+
+    @app.route('/transcript-archive/<int:channel_id>')
+    @login_required
+    def transcript_archive_channel(channel_id):
+        from alerts.transcript_archive import get_channel_name, list_dates, list_chunks
+        name = get_channel_name(channel_id)
+        if name is None:
+            return ('', 404)
+        dates = list_dates(channel_id)
+        date = request.args.get('date') or (dates[0] if dates else None)
+        chunks = list_chunks(channel_id, date) if date else []
+        return render_template('transcript_archive_channel.html', channel_id=channel_id,
+                                channel_name=name, dates=dates, date=date, chunks=chunks)
+
     @app.route('/searches/<int:sid>/edit', methods=['GET', 'POST'])
     @login_required
     def search_edit(sid):
@@ -1242,11 +1269,14 @@ def create_app() -> Flask:
         if request.method == 'POST':
             name      = request.form.get('name', '').strip()
             kw_raw    = request.form.get('keywords', '').strip()
+            excl_raw  = request.form.get('exclude_words', '').strip()
             kws       = [k.strip() for k in re.split(r'[\n,]+', kw_raw) if k.strip()]
+            excl      = [e.strip() for e in re.split(r'[\n,]+', excl_raw) if e.strip()]
             notify_tg  = 1 if request.form.get('notify_telegram') else 0
             new_start  = request.form.get('date_start')
             new_end    = request.form.get('date_end')
             new_kws    = json.dumps(kws, ensure_ascii=False)
+            new_excl   = json.dumps(excl, ensure_ascii=False)
             new_phon   = 1 if request.form.get('phonetic') else 0
             new_whole  = 1 if request.form.get('whole_word') else 0
             new_media  = ','.join(request.form.getlist('media_types')) or 'tv,radio'
@@ -1254,11 +1284,12 @@ def create_app() -> Flask:
             # DE AQUÍ EN ADELANTE, no reinterpreta lo ya escaneado.
             new_dedup  = 1 if request.form.get('dedup_channel') else 0
 
-            # Si cambian fechas, palabras, tipo de búsqueda o medios → re-escanear histórico
+            # Si cambian fechas, palabras, exclusiones, tipo de búsqueda o medios → re-escanear histórico
             needs_reinit = (
                 new_start != s['date_start']  or
                 new_end   != s['date_end']    or
                 new_kws   != s['keywords']    or
+                new_excl  != (s['exclude_words'] if 'exclude_words' in s.keys() and s['exclude_words'] else '[]') or
                 new_phon  != s['phonetic']    or
                 new_whole != s['whole_word']  or
                 new_media != (s['media_types'] if 'media_types' in s.keys() else 'tv,radio')
@@ -1266,11 +1297,11 @@ def create_app() -> Flask:
 
             db().execute("""
                 UPDATE searches SET
-                  name=?, keywords=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
+                  name=?, keywords=?, exclude_words=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
                   initialized=?, media_types=?, dedup_channel=?
                 WHERE id=?
-            """, (name, new_kws, new_phon, new_whole, new_start, new_end,
+            """, (name, new_kws, new_excl, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
@@ -1290,6 +1321,7 @@ def create_app() -> Flask:
         current_media = (s['media_types'] if 'media_types' in s.keys() and s['media_types'] else 'tv,radio').split(',')
         return render_template('search_edit.html', s=s,
                                keywords=json.loads(s['keywords']),
+                               exclude_words=json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else [],
                                media_types_choices=MEDIA_TYPES,
                                current_media_types=current_media)
 

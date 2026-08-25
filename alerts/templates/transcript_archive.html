@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block title %}Transcripciones — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <div class="page-title">Transcripciones</div>
+    <div style="font-size:.82rem;color:var(--text2)">
+      Todo lo transcrito, por canal — elige uno para leer por fecha
+    </div>
+  </div>
+</div>
+
+{% set tv_channels    = channels | selectattr('kind', 'equalto', 'tv') | list %}
+{% set radio_channels = channels | selectattr('kind', 'equalto', 'radio') | list %}
+
+{% if channels %}
+{% for group_label, group_icon, group_list in [('Televisión', 'bi-tv', tv_channels), ('Radio', 'bi-broadcast', radio_channels)] %}
+{% if group_list %}
+<div class="d-flex align-items-center mb-2" style="gap:.5rem;color:var(--text2);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em">
+  <i class="bi {{ group_icon }}"></i> {{ group_label }}
+</div>
+<div class="ta-grid mb-4">
+  {% for c in group_list %}
+  <a href="/transcript-archive/{{ c.channel_id }}" class="ta-card text-decoration-none">
+    <div class="ta-card-name" title="{{ c.channel_name }}">{{ c.channel_name }}</div>
+    <div class="ta-card-meta">
+      <span>{{ '{:,}'.format(c.count) }} fragmentos</span>
+      <span>·</span>
+      <span>últ. {{ c.last_ts[:16] }}</span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endfor %}
+<style>
+  .ta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: .6rem;
+  }
+  .ta-card {
+    display: block;
+    padding: .75rem .9rem;
+    border-radius: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    transition: border-color .15s, transform .15s;
+  }
+  .ta-card:hover { border-color: var(--green); transform: translateY(-1px); }
+  .ta-card-name {
+    font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ta-card-meta { font-size: .74rem; color: var(--muted); margin-top: .2rem; display: flex; gap: .35rem; }
+</style>
+{% else %}
+<p style="color:var(--muted)">No hay transcripciones disponibles todavía.</p>
+{% endif %}
+
+{% endblock %}

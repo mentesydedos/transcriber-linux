@@ -1,0 +1,118 @@
+{% extends 'base.html' %}
+{% block title %}{{ channel_name }} — Transcripciones — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center mb-3" style="gap:.75rem">
+  <a href="/transcript-archive" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i></a>
+  <div>
+    <div class="page-title" style="margin-bottom:0">{{ channel_name }}</div>
+    <div style="font-size:.78rem;color:var(--text2)">canal_{{ '%02d'|format(channel_id) }} · {{ chunks|length }} fragmentos{% if date %} el {{ date }}{% endif %}</div>
+  </div>
+</div>
+
+{% if dates %}
+<div class="mb-3" style="overflow-x:auto;white-space:nowrap;padding-bottom:.25rem">
+  {% for d in dates %}
+  <a class="btn btn-sm {% if d==date %}btn-lib-active{% else %}btn-outline-secondary{% endif %} me-2"
+     href="/transcript-archive/{{ channel_id }}?date={{ d }}">{{ d }}</a>
+  {% endfor %}
+</div>
+
+{% if chunks %}
+<div id="taJumpBar" class="d-flex align-items-center flex-wrap mb-2" style="gap:.4rem;position:sticky;top:0;z-index:5;background:var(--bg);padding:.4rem 0">
+  <div class="d-flex align-items-center" style="gap:.3rem">
+    <input type="time" id="taJumpInput" class="form-control form-control-sm" style="width:110px">
+    <button id="taJumpBtn" class="btn btn-sm btn-primary"><i class="bi bi-arrow-down-circle"></i> Ir</button>
+  </div>
+  <div id="taHourChips" class="d-flex flex-wrap" style="gap:.3rem"></div>
+</div>
+
+<div class="card" style="padding:0">
+  <div class="d-flex flex-column">
+    {% for c in chunks %}
+    <div class="ta-row d-flex align-items-start" data-time="{{ c.timestamp[11:16] }}">
+      <div class="ta-row-time">{{ c.timestamp[11:16] }}</div>
+      <div class="ta-row-text">{{ c.text }}</div>
+      {% if c.clip_url %}
+      <a href="{{ c.clip_url }}" target="_blank" rel="noopener noreferrer" class="ta-row-clip" title="Escuchar/ver el bloque">
+        <i class="bi bi-play-circle"></i>
+      </a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<p style="color:var(--muted)">No hay transcripciones para esta fecha.</p>
+{% endif %}
+{% else %}
+<p style="color:var(--muted)">No hay transcripciones disponibles para este canal.</p>
+{% endif %}
+
+<style>
+  .btn-lib-active { background: var(--green); color:#06240f; border:none; }
+  .ta-row {
+    padding: .55rem .9rem;
+    border-bottom: 1px solid var(--border);
+    gap: .8rem;
+  }
+  .ta-row:last-child { border-bottom: none; }
+  .ta-row:hover { background: var(--card2); }
+  .ta-row-time {
+    font-family: monospace; font-weight: 700; color: var(--green);
+    min-width: 44px; padding-top: .1rem; flex-shrink: 0;
+  }
+  .ta-row-text { flex: 1; min-width: 0; color: var(--text); font-size: .88rem; line-height: 1.45; }
+  .ta-row-clip { color: var(--text2); flex-shrink: 0; font-size: 1.1rem; }
+  .ta-row-clip:hover { color: var(--green); }
+  .ta-hour-chip {
+    font-family: monospace; font-size: .74rem; padding: .15rem .45rem;
+    border-radius: 5px; border: 1px solid var(--border); background: var(--card2);
+    color: var(--text2); cursor: pointer;
+  }
+  .ta-hour-chip:hover { border-color: var(--green); color: var(--text); }
+  .ta-row.ta-flash { animation: taFlash 1.6s ease; }
+  @keyframes taFlash {
+    0%, 100% { background: transparent; }
+    15% { background: rgba(34,197,94,.28); }
+  }
+</style>
+
+<script>
+(function () {
+  const rows = Array.from(document.querySelectorAll('.ta-row[data-time]'));
+  if (!rows.length) return;
+
+  // Chips de las horas que sí tienen contenido -- un clic para saltar,
+  // sin tener que escribir la hora si solo quieres explorar.
+  const hours = [...new Set(rows.map(r => r.dataset.time.slice(0, 2)))].sort();
+  const chipsBox = document.getElementById('taHourChips');
+  hours.forEach(function (h) {
+    const chip = document.createElement('span');
+    chip.className = 'ta-hour-chip';
+    chip.textContent = h + 'h';
+    chip.addEventListener('click', function () { jumpTo(h + ':00'); });
+    chipsBox.appendChild(chip);
+  });
+
+  function jumpTo(hhmm) {
+    if (!hhmm) return;
+    // Primer fragmento con hora >= la buscada -- si no hay ninguno después,
+    // cae al último disponible (buscabas algo cerca del final del día).
+    let target = rows.find(r => r.dataset.time >= hhmm) || rows[rows.length - 1];
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('ta-flash');
+    void target.offsetWidth; // reinicia la animación si ya se había disparado antes
+    target.classList.add('ta-flash');
+  }
+
+  document.getElementById('taJumpBtn').addEventListener('click', function () {
+    jumpTo(document.getElementById('taJumpInput').value);
+  });
+  document.getElementById('taJumpInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') jumpTo(this.value);
+  });
+})();
+</script>
+
+{% endblock %}
