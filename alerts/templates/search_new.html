@@ -12,6 +12,24 @@
   Configura las palabras a detectar, el período y cómo recibir los resultados.
 </p>
 
+<style>
+.mt-chip {
+  display: inline-flex; align-items: center; gap: .5rem;
+  padding: .5rem 1rem; border-radius: 999px;
+  border: 1.5px solid var(--border); background: var(--card);
+  color: var(--text2); font-weight: 600; font-size: .9rem;
+  cursor: pointer; user-select: none; transition: all .15s ease;
+}
+.mt-chip:hover { border-color: var(--accent); color: var(--text); }
+.mt-chip .mt-chip-check { display: none; font-size: .95rem; }
+.btn-check:checked + .mt-chip {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.btn-check:checked + .mt-chip .mt-chip-check { display: inline-block; }
+.btn-check:focus-visible + .mt-chip { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
 <form method="post" id="search-new-form">
 
   <!-- Nombre -->
@@ -95,17 +113,20 @@
     <!-- Medios a monitorear -->
     <div class="p-3 rounded mt-2" style="background:color-mix(in srgb, var(--accent) 8%, var(--card2));border:1px solid var(--border)">
       <div class="fw-semibold mb-2" style="color:var(--text)">Medios a monitorear</div>
-      <div class="d-flex gap-4">
+      <div class="d-flex flex-wrap gap-2 mt-select">
+        {% set mt_icons = {'tv': 'bi-tv', 'radio': 'bi-broadcast', 'news': 'bi-newspaper', 'youtube': 'bi-youtube'} %}
         {% for value, label in media_types_choices %}
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" name="media_types" value="{{ value }}"
-                 id="mt_{{ value }}" checked>
-          <label class="form-check-label" for="mt_{{ value }}" style="color:var(--text)">{{ label }}</label>
-        </div>
+        <input class="btn-check" type="checkbox" name="media_types" value="{{ value }}"
+               id="mt_{{ value }}" autocomplete="off" {{ 'checked' if value in default_media_types }}>
+        <label class="mt-chip" for="mt_{{ value }}">
+          <i class="bi {{ mt_icons.get(value, 'bi-dot') }}"></i>
+          <span>{{ label }}</span>
+          <i class="bi bi-check-circle-fill mt-chip-check"></i>
+        </label>
         {% endfor %}
       </div>
-      <div style="font-size:.78rem;color:var(--text2);margin-top:.4rem">
-        Desmarca uno si solo quieres monitorear ese medio.
+      <div style="font-size:.78rem;color:var(--text2);margin-top:.6rem">
+        Toca uno para activarlo o desactivarlo. Los resaltados están activos.
       </div>
     </div>
   </div>

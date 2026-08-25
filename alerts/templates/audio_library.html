@@ -1,38 +1,36 @@
 {% extends 'base.html' %}
-{% block title %}Videoteca — AlertaTV{% endblock %}
+{% block title %}Audioteca — AlertaTV{% endblock %}
 {% block content %}
 
 <div class="d-flex justify-content-between align-items-center mb-3">
   <div>
-    <div class="page-title">Videoteca</div>
+    <div class="page-title">Audioteca</div>
     <div style="font-size:.82rem;color:var(--text2)">
-      Grabaciones históricas — elige un canal para navegar por fecha, hora o programa
+      Grabaciones históricas de radio — elige una estación para navegar por fecha y hora
     </div>
   </div>
 </div>
 
 <div class="d-flex mb-4" style="gap:.5rem">
-  <span class="btn btn-sm" style="background:var(--green);color:#06240f;border:none;pointer-events:none">
+  <a href="/library" class="btn btn-sm btn-outline-secondary">
     <i class="bi bi-tv"></i> Televisión
-  </span>
-  <a href="/audio-library" class="btn btn-sm btn-outline-secondary">
-    <i class="bi bi-broadcast"></i> Radio
   </a>
+  <span class="btn btn-sm" style="background:var(--green);color:#06240f;border:none;pointer-events:none">
+    <i class="bi bi-broadcast"></i> Radio
+  </span>
 </div>
 
-{% if channels %}
+{% if stations %}
 <div class="lib-grid">
-  {% for c in channels %}
-  <a href="/library/{{ c.num }}" class="lib-poster text-decoration-none">
-    <div class="lib-poster-img">
-      <img src="/videowall/thumb/{{ c.num }}.jpg" alt="" loading="lazy"
-           onerror="this.closest('.lib-poster-img').classList.add('lib-noimg')">
-      <div class="lib-poster-fallback"><i class="bi bi-tv"></i></div>
+  {% for s in stations %}
+  <a href="/audio-library/{{ s.num }}" class="lib-poster text-decoration-none">
+    <div class="lib-poster-img lib-noimg">
+      <div class="lib-poster-fallback"><i class="bi bi-broadcast"></i></div>
       <div class="lib-poster-play"><i class="bi bi-play-circle-fill"></i></div>
     </div>
     <div class="lib-poster-scrim">
-      <div class="lib-poster-name" title="{{ c.name }}">{{ c.name }}</div>
-      <div class="lib-poster-num">canal_{{ '%02d'|format(c.num) }}</div>
+      <div class="lib-poster-name" title="{{ s.name }}">{{ s.name }}</div>
+      <div class="lib-poster-num">canal_{{ '%02d'|format(s.num) }}</div>
     </div>
   </a>
   {% endfor %}
@@ -60,13 +58,10 @@
     z-index: 2;
   }
   .lib-poster-img { position: absolute; inset: 0; background: #0a0f0c; }
-  .lib-poster-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .lib-poster-img.lib-noimg img { display: none; }
   .lib-poster-fallback {
-    display: none; align-items: center; justify-content: center;
+    display: flex; align-items: center; justify-content: center;
     position: absolute; inset: 0; font-size: 2.2rem; color: var(--text2);
   }
-  .lib-poster-img.lib-noimg .lib-poster-fallback { display: flex; }
   .lib-poster-play {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     font-size: 2.4rem; color: #fff; opacity: 0; transition: opacity .15s;
@@ -84,7 +79,7 @@
   .lib-poster-num { font-size: .66rem; color: #cfd8d3; }
 </style>
 {% else %}
-<p style="color:var(--muted)">No hay grabaciones disponibles todavía.</p>
+<p style="color:var(--muted)">No hay estaciones configuradas.</p>
 {% endif %}
 
 {% endblock %}

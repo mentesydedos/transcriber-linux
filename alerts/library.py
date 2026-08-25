@@ -17,7 +17,19 @@ recodificar.
 Solo TV: los canales de radio no graban audio de forma permanente (ver
 worker.py/transcriber_parakeet.py — solo se transcribe y se descarta), así
 que no hay nada que reproducir históricamente para radio todavía.
+
+Disco local vs NAS: cleanup_video.py borra bloques locales cuando el disco
+baja de su objetivo de espacio libre (ver ese script) -- con 26 canales
+grabando, eso deja solo ~4-5 días de historial en disco. backup_nas2.py
+respalda cada bloque .mp4 finalizado al NAS ANTES de que cleanup_video.py
+pueda borrarlo (nunca borra local, puro respaldo), organizado por
+fecha/bloque en vez de por canal:
+    NAS_ROOT/YYYY-MM-DD/YYYY-MM-DD_HH-MM_HH-MM/canal_NN_Nombre_..._HH-MM.mp4
+Este módulo combina ambas fuentes -- local primero (más rápido, NVMe) y NAS
+como respaldo para fechas ya borradas localmente -- para que la videoteca
+muestre todo el historial disponible, no solo lo que sigue en disco local.
 """
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -27,6 +39,9 @@ VIDEO_DIR = BASE_DIR / 'output_video'
 CACHE_DIR = BASE_DIR / 'alerts' / 'cache' / 'library'
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 M3U_PATH  = BASE_DIR / 'TV audio.m3u'
+# Mismo default que BACKUP_NAS2_ROOT en backup_nas2.py -- debe apuntar al
+# mismo lugar donde ese script ya escribe.
+NAS_VIDEO_ROOT = Path(os.environ.get("BACKUP_NAS2_ROOT", "/mnt/nas2-tv/videos 720x480"))
 
 # Canales <= este número graban por GPU/NVENC (ver video_recorder.py,
 # NVENC_LIMIT) en AV1 (ver el plan del 2026-08-10). AV1 tiene decodificación
@@ -96,13 +111,47 @@ def get_channel(num: int) -> dict | None:
     return None
 
 
-def list_dates(folder: Path) -> list[str]:
-    """Fechas (YYYY-MM-DD) con al menos un bloque grabado, más reciente primero."""
+def _nas_path_for(filename: str) -> Path | None:
+    """Reconstruye la ruta NAS de un bloque a partir de su nombre de archivo
+    -- misma lógica que _dest_for() en backup_nas2.py (duplicada a propósito,
+    igual que el resto de este módulo evita importar scripts standalone)."""
+    m = _SEG_RE.search(filename)
+    if not m:
+        return None
+    date_str, hh, mm = m.groups()
+    from datetime import datetime, timedelta
+    start = datetime.strptime(f"{date_str} {hh}:{mm}", "%Y-%m-%d %H:%M")
+    end = start + timedelta(minutes=30)
+    block = f"{date_str}_{hh}-{mm}_{end.strftime('%H-%M')}"
+    return NAS_VIDEO_ROOT / date_str / block / filename
+
+
+def _nas_dates_for_channel(num: int) -> set[str]:
+    """Fechas con al menos un bloque de este canal respaldado en el NAS --
+    NAS_VIDEO_ROOT está organizado por fecha primero (no por canal, ver
+    docstring del módulo), así que hay que recorrer cada carpeta de fecha."""
+    dates = set()
+    if not NAS_VIDEO_ROOT.is_dir():
+        return dates
+    prefix = f"canal_{num:02d}_"
+    for date_dir in NAS_VIDEO_ROOT.iterdir():
+        if not date_dir.is_dir() or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir.name):
+            continue
+        if any(date_dir.glob(f"*/{prefix}*.mp4")):
+            dates.add(date_dir.name)
+    return dates
+
+
+def list_dates(channel: dict) -> list[str]:
+    """Fechas (YYYY-MM-DD) con al menos un bloque grabado, local o en el NAS
+    (ver docstring del módulo), más reciente primero."""
+    folder = channel["folder"]
     dates = set()
     for p in (*folder.glob("*.ts"), *folder.glob("*.mp4"), *folder.glob("*.mkv")):
         m = _SEG_RE.search(p.name)
         if m:
             dates.add(m.group(1))
+    dates |= _nas_dates_for_channel(channel["num"])
     return sorted(dates, reverse=True)
 
 
@@ -111,7 +160,10 @@ def list_blocks(channel: dict, date: str, epg_db=None) -> list[dict]:
     (si hay datos) que estaba al aire al inicio del bloque -- esto es lo que
     permite filtrar/seleccionar "por programa" en el frontend. Prefiere el
     .mp4 ya finalizado sobre el .ts si por alguna razón existieran los dos
-    (ventana breve mientras finalize_video.py hace el rename atómico)."""
+    (ventana breve mientras finalize_video.py hace el rename atómico), y
+    local sobre NAS cuando el mismo bloque existe en ambos (más rápido de
+    servir) -- el NAS solo llena los huecos de fechas ya borradas del disco
+    local por cleanup_video.py."""
     from alerts.epg import get_programme_at
     folder = channel["folder"]
     by_time: dict[str, Path] = {}
@@ -123,6 +175,18 @@ def list_blocks(channel: dict, date: str, epg_db=None) -> list[dict]:
         key = f"{m.group(2)}-{m.group(3)}"
         if key not in by_time or p.suffix == ".mp4":
             by_time[key] = p
+
+    date_dir = NAS_VIDEO_ROOT / date
+    if date_dir.is_dir():
+        prefix = f"canal_{channel['num']:02d}_"
+        for p in date_dir.glob(f"*/{prefix}*.mp4"):
+            m = _SEG_RE.search(p.name)
+            if not m:
+                continue
+            key = f"{m.group(2)}-{m.group(3)}"
+            if key not in by_time:  # local (de cualquier extensión) siempre gana
+                by_time[key] = p
+
     blocks = []
     for key in sorted(by_time):
         p = by_time[key]
@@ -154,9 +218,17 @@ def get_or_build_clip(channel_num: int, folder: Path, filename: str,
     idea que finalize_video.py): bloque que todavía es .ts/.mkv (el más
     reciente, no finalizado todavía). Solo reempaqueta el contenedor para
     obtener faststart; el trabajo de decodificar lo sigue haciendo el
-    navegador del cliente, no este servidor."""
+    navegador del cliente, no este servidor.
+
+    Si el bloque ya no está en disco local (cleanup_video.py lo borró),
+    se sirve directo desde el NAS -- ya está finalizado a .mp4 con
+    faststart ahí también (backup_nas2.py solo copia bloques ya
+    finalizados), así que tampoco necesita remux."""
     src = folder / filename
     if not src.exists():
+        nas_src = _nas_path_for(filename)
+        if nas_src and nas_src.exists():
+            return nas_src
         return None
 
     if src.suffix == ".mp4":

@@ -156,10 +156,7 @@ a:hover { color: #60a5fa; }
 
 <!-- Navbar -->
 <nav class="navbar d-flex align-items-center">
-  <a class="brand d-flex align-items-center gap-2" href="/">
-  <img src="/static/logo_iteso.jpg" height="32" style="border-radius:4px">
-  <span>Monitoreo ITESO</span>
-</a>
+  <a class="brand d-flex align-items-center gap-2" href="/"></a>
   <div class="ms-auto d-flex align-items-center gap-3">
     {% if session.get('uid') %}
       <span style="font-size:.85rem;color:var(--text2)">
@@ -199,17 +196,17 @@ a:hover { color: #60a5fa; }
       <a class="nav-link {% if '/searches/new' in request.path %}active{% endif %}" href="/searches/new">
         <i class="bi bi-plus-circle"></i> Nueva búsqueda
       </a>
-      <a class="nav-link {% if request.path=='/ask' %}active{% endif %}" href="/ask">
-        <i class="bi bi-robot"></i> Consulta IA
-      </a>
       <a class="nav-link {% if request.path=='/videowall' %}active{% endif %}" href="/videowall">
-        <i class="bi bi-grid-3x3-gap"></i> Videowall
+        <i class="bi bi-grid-3x3-gap"></i> Live TV
       </a>
       <a class="nav-link {% if request.path=='/radiowall' %}active{% endif %}" href="/radiowall">
-        <i class="bi bi-broadcast"></i> Radio FM
+        <i class="bi bi-broadcast"></i> Live Radio
       </a>
       <a class="nav-link {% if '/library' in request.path %}active{% endif %}" href="/library">
         <i class="bi bi-collection-play"></i> Videoteca
+      </a>
+      <a class="nav-link {% if '/audio-library' in request.path %}active{% endif %}" href="/audio-library">
+        <i class="bi bi-music-note-list"></i> Audioteca
       </a>
       <a class="nav-link {% if request.path=='/profile' %}active{% endif %}" href="/profile">
         <i class="bi bi-person-circle"></i> Mi perfil

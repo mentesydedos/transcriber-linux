@@ -414,6 +414,10 @@
             <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">
               <i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i>
             </a>
+            {% elif m.channel_kind == 'youtube' %}
+            <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)">
+              <i class="bi bi-youtube" style="color:#ff0000"></i>
+            </a>
             {% else %}
             <i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>
             {% endif %}
@@ -587,6 +591,7 @@
 })();
 </script>
 {% endif %}
+<script id="active-filters" type="application/json">{{ {"kw": kfs, "ch": cfs, "prog": pfs, "mt": mfs, "date_from": date_from, "date_to": date_to} | tojson }}</script>
 <script>
 // Live auto-refresh: poll for new matches every 8 seconds
 (function() {
@@ -596,6 +601,20 @@
   // Also update the inline total badge in card header
   const headerBadge = document.querySelector('.card-header .rounded[style*="card2"]');
   const isAdmin   = {{ 'true' if session.role == 'admin' else 'false' }};
+  const activeFilters = JSON.parse(document.getElementById('active-filters').textContent);
+  // Los mismos filtros activos en la página (kw/ch/prog/mt/fechas) se mandan
+  // también al poll de auto-refresh -- si no, el backend regresaba CUALQUIER
+  // coincidencia nueva sin importar el filtro (ver api_matches en app.py).
+  function filterQS() {
+    const p = new URLSearchParams();
+    (activeFilters.kw   || []).forEach(v => p.append('kw', v));
+    (activeFilters.ch   || []).forEach(v => p.append('ch', v));
+    (activeFilters.prog || []).forEach(v => p.append('prog', v));
+    (activeFilters.mt   || []).forEach(v => p.append('mt', v));
+    if (activeFilters.date_from) p.set('date_from', activeFilters.date_from);
+    if (activeFilters.date_to)   p.set('date_to', activeFilters.date_to);
+    return p.toString();
+  }
 
   function esc(s) {
     return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -646,6 +665,8 @@
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
       : m.channel_kind === 'news'
       ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original"><i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i></a>`
+      : m.channel_kind === 'youtube'
+      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)"><i class="bi bi-youtube" style="color:#ff0000"></i></a>`
       : `<i class="bi bi-broadcast" style="color:var(--muted)" title="Radio — sin video"></i>`;
     return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
@@ -695,37 +716,29 @@
   }
 
   function refresh() {
-    {% if not kfs and not cfs and not pfs and not date_from and not date_to and page == 1 %}
-    fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId)
+    const qs = filterQS();
+    fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId + (qs ? '&' + qs : ''))
       .then(r => r.json())
       .then(data => {
         const newMatches = data.matches || [];
         if (newMatches.length > 0) {
+          newMatches.forEach(m => { if (m.id > lastId) lastId = m.id; });
+          totalCountEls.forEach(el => { el.textContent = data.total; });
+          if (headerBadge) headerBadge.textContent = data.total;
+          {% if page == 1 %}
+          // Solo se insertan filas en vivo en la página 1 -- en páginas
+          // siguientes una coincidencia nueva no pertenece cronológicamente
+          // a lo que se está viendo, así que solo se actualiza el contador.
           newMatches.forEach(m => {
-            if (m.id > lastId) lastId = m.id;
             const ts = m.precise_timestamp || m.timestamp || '';
             insertRowSorted(makeRow(m), ts);
           });
           initTooltips(tbody);
-          // Update total count displays
-          totalCountEls.forEach(el => { el.textContent = data.total; });
-          if (headerBadge) headerBadge.textContent = data.total;
           showNewBadge(newMatches.length);
+          {% endif %}
         }
       })
       .catch(() => {});
-    {% else %}
-    // On filtered/paginated views just update the count silently
-    fetch('/api/searches/{{ s.id }}/matches?after_id=' + lastId)
-      .then(r => r.json())
-      .then(data => {
-        if ((data.matches || []).length > 0) {
-          data.matches.forEach(m => { if (m.id > lastId) lastId = m.id; });
-          totalCountEls.forEach(el => { el.textContent = data.total; });
-        }
-      })
-      .catch(() => {});
-    {% endif %}
   }
 
   setInterval(refresh, 8000);

@@ -348,6 +348,13 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+-- Videos de YouTube ya descargados/transcritos (alerts/watcher.py
+-- _poll_youtube_for_search) -- evita re-descargar y re-transcribir por CPU
+-- un video ya visto en un ciclo anterior, tenga o no match esa vez.
+CREATE TABLE IF NOT EXISTS youtube_processed (
+    video_id     TEXT PRIMARY KEY,
+    processed_at TEXT DEFAULT (datetime('now','localtime'))
+);
 CREATE INDEX IF NOT EXISTS idx_m_search ON matches(search_id);
 CREATE INDEX IF NOT EXISTS idx_m_found  ON matches(found_at);
 CREATE INDEX IF NOT EXISTS idx_s_user   ON searches(user_id);
@@ -375,6 +382,10 @@ def _init_db():
         # Última vez que se consultó Google Noticias para esta búsqueda (ver
         # alerts/googlenews.py) -- NULL hasta el primer fetch.
         ('news_last_fetch',  'TEXT'),
+        # Igual que news_last_fetch pero para YouTube (alerts/youtube.py) --
+        # intervalo propio y más largo (YOUTUBE_POLL_MINUTES en watcher.py)
+        # porque cada ciclo puede implicar descargar/transcribir video nuevo.
+        ('youtube_last_fetch', 'TEXT'),
         # Si la misma palabra se repite en el mismo canal dentro de 1 minuto
         # (misma nota/segmento), contar solo una coincidencia -- ver
         # alerts/watcher.py _recent_match_exists(). Default 1 (activado) para
@@ -774,9 +785,10 @@ def create_app() -> Flask:
                 # el usuario nunca lo veía porque el redirect lo mandaba de vuelta
                 # a la lista sin ninguna señal de que algo se estaba procesando.
                 return redirect(url_for('search_detail', sid=cur.lastrowid))
-        from alerts.channel_types import MEDIA_TYPES
+        from alerts.channel_types import MEDIA_TYPES, DEFAULT_MEDIA_TYPES
         return render_template('search_new.html', today=date.today().isoformat(),
-                               media_types_choices=MEDIA_TYPES)
+                               media_types_choices=MEDIA_TYPES,
+                               default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')))
 
     def _match_where(sid, kws, chs, pfs, mts, date_from, date_to):
         """Construye WHERE + params para la tabla matches con todos los filtros activos.
@@ -791,16 +803,16 @@ def create_app() -> Flask:
             conds.append(f"channel_name IN ({','.join('?'*len(chs))})")
             params.extend(chs)
         if mts:
-            from alerts.channel_types import RADIO_CHANNEL_MIN, YOUTUBE_CHANNEL_MIN, NEWS_CHANNEL_ID
+            from alerts.channel_types import RADIO_CHANNEL_MIN, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
             mt_conds = []
             if 'tv' in mts:
                 mt_conds.append(f"(channel_id IS NULL OR channel_id < {RADIO_CHANNEL_MIN})")
             if 'radio' in mts:
-                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id < {YOUTUBE_CHANNEL_MIN})")
+                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id != {NEWS_CHANNEL_ID} AND channel_id != {YOUTUBE_CHANNEL_ID})")
             if 'news' in mts:
                 mt_conds.append(f"channel_id = {NEWS_CHANNEL_ID}")
             if 'youtube' in mts:
-                mt_conds.append(f"(channel_id >= {YOUTUBE_CHANNEL_MIN} AND channel_id != {NEWS_CHANNEL_ID})")
+                mt_conds.append(f"channel_id = {YOUTUBE_CHANNEL_ID}")
             if mt_conds:
                 conds.append('(' + ' OR '.join(mt_conds) + ')')
         if date_from:
@@ -1128,7 +1140,7 @@ def create_app() -> Flask:
         ch = get_channel(num)
         if ch is None:
             return ('', 404)
-        dates = list_dates(ch['folder'])
+        dates = list_dates(ch)
         date = request.args.get('date') or (dates[0] if dates else None)
         blocks = list_blocks(ch, date, epg_db=db()) if date else []
         return render_template('library_channel.html', channel=ch, dates=dates,
@@ -1159,7 +1171,7 @@ def create_app() -> Flask:
         aún no se ha finalizado) -- sin transcodificar, aunque el canal sea
         GPU/AV1: los reproductores de escritorio (VLC, etc.) lo reproducen
         bien aunque el navegador no lo soporte de forma nativa."""
-        from alerts.library import get_channel, _SEG_RE
+        from alerts.library import get_channel, _SEG_RE, _nas_path_for
         if not _SEG_RE.search(filename) or '/' in filename or '..' in filename:
             return ('', 400)
         ch = get_channel(num)
@@ -1167,6 +1179,55 @@ def create_app() -> Flask:
             return ('', 404)
         path = ch['folder'] / filename
         if not path.exists():
+            # Ya no está en disco local (cleanup_video.py) -- se busca en el
+            # respaldo del NAS antes de dar 404.
+            nas_path = _nas_path_for(filename)
+            path = nas_path if nas_path and nas_path.exists() else None
+        if path is None:
+            return ('', 404)
+        return send_file(path, as_attachment=True, download_name=filename)
+
+    @app.route('/audio-library')
+    @login_required
+    def audio_library():
+        from alerts.audio_library import list_stations
+        return render_template('audio_library.html', stations=list_stations())
+
+    @app.route('/audio-library/<int:num>')
+    @login_required
+    def audio_library_station(num):
+        from alerts.audio_library import get_station, list_dates, list_blocks
+        st = get_station(num)
+        if st is None:
+            return ('', 404)
+        dates = list_dates(num)
+        date = request.args.get('date') or (dates[0] if dates else None)
+        blocks = list_blocks(num, date) if date else []
+        return render_template('audio_library_station.html', station=st, dates=dates,
+                                date=date, blocks=blocks)
+
+    @app.route('/audio-library/play/<int:num>/<filename>')
+    @login_required
+    def audio_library_play(num, filename):
+        """Sirve un bloque de 30 min de audio -- local (el más reciente) o
+        NAS, sin transcodificar. send_file soporta Range de forma nativa --
+        permite adelantar/atrasar sin volver a descargar el bloque entero."""
+        from alerts.audio_library import get_station, resolve_block
+        if get_station(num) is None:
+            return ('', 404)
+        path = resolve_block(num, filename)
+        if path is None:
+            return ('', 404)
+        return send_file(path, mimetype='audio/aac', conditional=True)
+
+    @app.route('/audio-library/download/<int:num>/<filename>')
+    @login_required
+    def audio_library_download(num, filename):
+        from alerts.audio_library import get_station, resolve_block
+        if get_station(num) is None:
+            return ('', 404)
+        path = resolve_block(num, filename)
+        if path is None:
             return ('', 404)
         return send_file(path, as_attachment=True, download_name=filename)
 
@@ -1430,21 +1491,34 @@ def create_app() -> Flask:
         d        = db()
         since    = request.args.get('since', '')
         after_id = request.args.get('after_id', type=int)
+
+        # Mismos filtros que la vista principal (kw/ch/prog/mt/fechas) -- sin
+        # esto, el auto-refresh cada 8s (ver search_detail.html refresh())
+        # inyectaba CUALQUIER coincidencia nueva sin importar el filtro activo
+        # (ej. filtrar por "Televisión" y ver aparecer coincidencias de radio).
+        kfs       = request.args.getlist('kw')
+        cfs       = request.args.getlist('ch')
+        pfs       = request.args.getlist('prog')
+        mfs       = request.args.getlist('mt')
+        date_from = request.args.get('date_from', '')
+        date_to   = request.args.get('date_to', '')
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+
         if after_id is not None:
             rows = d.execute(
-                "SELECT * FROM matches WHERE search_id=? AND id>? ORDER BY id ASC LIMIT 100",
-                (sid, after_id)
+                f"SELECT * FROM matches WHERE {where} AND id>? ORDER BY id ASC LIMIT 100",
+                (*params, after_id)
             ).fetchall()
         elif since:
             rows = d.execute(
-                "SELECT * FROM matches WHERE search_id=? AND found_at>? ORDER BY found_at DESC LIMIT 50",
-                (sid, since)
+                f"SELECT * FROM matches WHERE {where} AND found_at>? ORDER BY found_at DESC LIMIT 50",
+                (*params, since)
             ).fetchall()
         else:
             rows = d.execute(
-                "SELECT * FROM matches WHERE search_id=? ORDER BY found_at DESC LIMIT 50", (sid,)
+                f"SELECT * FROM matches WHERE {where} ORDER BY found_at DESC LIMIT 50", params
             ).fetchall()
-        total = d.execute("SELECT COUNT(*) FROM matches WHERE search_id=?", (sid,)).fetchone()[0]
+        total = d.execute(f"SELECT COUNT(*) FROM matches WHERE {where}", params).fetchone()[0]
         phonetic   = bool(s['phonetic'])
         whole_word = bool(s['whole_word'])
         enriched = [_enrich_match(r, phonetic=phonetic, whole_word=whole_word) for r in rows]

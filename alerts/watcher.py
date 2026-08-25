@@ -10,13 +10,13 @@ import threading
 import time
 import unicodedata
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib  import Path
 
 from alerts.mailer         import send_immediate, send_daily_report, send_final_report
 from alerts.telegram       import notify_match as tg_notify_match
 from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
-from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID
+from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
 from alerts.googlenews     import fetch_articles as gnews_fetch
 
 logger = logging.getLogger('watcher')
@@ -25,7 +25,16 @@ BASE_DIR      = Path(__file__).parent.parent
 ALERTS_DB     = BASE_DIR / 'alerts.db'
 TRANS_DB      = BASE_DIR / 'transcriptions.db'
 POLL_INTERVAL = 5   # segundos entre cada ciclo
-NEWS_POLL_MINUTES = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
+NEWS_POLL_MINUTES  = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
+# YouTube Data API v3 tiene cuota diaria limitada (10,000 unidades/día,
+# 100 por búsqueda -- ~100 búsquedas/día en total, compartidas entre TODAS
+# las búsquedas activas con YouTube habilitado). A diferencia de Google
+# Noticias, consultar cada 20 min agotaría la cuota rápido con pocas
+# búsquedas activas. Política: una consulta inmediata al crear/activar la
+# búsqueda (youtube_last_fetch NULL) + una consulta diaria a las
+# YOUTUBE_DAILY_HOUR (hora local) para cubrir lo subido durante el día.
+YOUTUBE_DAILY_HOUR = 1  # 1am -- corre en su propio hilo (_youtube_loop) para
+                        # no frenar el loop rápido de 5s con descargas/transcripciones.
 
 
 # ── Normalización fonética española ──────────────────────────────────────────
@@ -37,6 +46,15 @@ def _phonetic_es(text: str) -> str:
     """Normalización fonética básica del español."""
     t = _strip_accents(text)
     t = re.sub(r'\bh', '', t)          # h inicial (muda)
+    # "sh" no existe en español -- el ASR lo transcribe de forma inconsistente
+    # en nombres extranjeros (Sheinbaum/Scheinbaum, Shakira/Chakira, etc.),
+    # a veces como "sh" y a veces insertando una "c" ("sch"). Sin esto, buscar
+    # "sheinbaum" en modo fonético no encontraba las menciones transcritas
+    # como "Scheinbaum" -- ambas colapsan a la misma forma ("seinbaum").
+    t = t.replace('sch', 's')
+    t = t.replace('sh', 's')
+    t = re.sub(r'n(?=[bmp])', 'm', t)  # asimilación nasal real del español
+                                        # ("un beso"~"um beso", "envidia"~"embidia")
     t = t.replace('v', 'b')            # b/v
     t = t.replace('ll', 'y')           # ll → y
     t = re.sub(r'qu([ei])', r'k\1', t) # que/qui → ke/ki
@@ -189,6 +207,72 @@ def _poll_news_for_search(adb, s, keywords: list[str],
                 VALUES (?,?,?,?,?,?,?)""",
                 (s['id'], kw, NEWS_CHANNEL_ID, art['source'], ts, art['title'], art['link']))
             total += cur.rowcount
+    return total
+
+
+# ── YouTube ────────────────────────────────────────────────────────────────
+def _poll_youtube_for_search(adb, s, keywords: list[str],
+                              date_from: str | None = None, date_to: str | None = None) -> int:
+    """Busca videos nuevos en YouTube por cada keyword (YouTube Data API v3),
+    descarga y transcribe el audio de cada video NUEVO (CPU, ver
+    alerts/youtube.py) y guarda como matches los segmentos de 30s donde
+    aparece alguna keyword de la búsqueda (channel_id=YOUTUBE_CHANNEL_ID,
+    channel_name=título del video, source_url=link con &t=<segundo> al
+    momento exacto). tabla youtube_processed evita volver a descargar/
+    transcribir un video ya visto, aunque esa vez no haya dado match --
+    la transcripción es cara (CPU) y no cambia entre ciclos."""
+    from alerts.youtube import search_videos, download_audio, transcribe_video, _api_key
+    api_key = _api_key(adb)
+    if not api_key:
+        return 0
+    total = 0
+    tmp_root = BASE_DIR / 'tmp_youtube'
+    for kw in keywords:
+        try:
+            results = search_videos(kw, date_from, date_to, api_key)
+        except Exception as e:
+            logger.error(f"[YouTube] búsqueda '{kw}' error de API: {e}")
+            continue
+        for vid in results:
+            seen = adb.execute("SELECT 1 FROM youtube_processed WHERE video_id=?",
+                                (vid['video_id'],)).fetchone()
+            if seen:
+                continue
+            wav = download_audio(vid['video_id'], tmp_root)
+            if not wav:
+                adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
+                            (vid['video_id'],))
+                adb.commit()
+                continue
+            try:
+                segments = transcribe_video(wav, logger)
+            except Exception as e:
+                logger.error(f"[YouTube] transcripción de {vid['video_id']} falló: {e}")
+                segments = []
+            finally:
+                wav.unlink(missing_ok=True)
+
+            try:
+                published = datetime.fromisoformat(vid['published'].replace('Z', '+00:00'))
+            except ValueError:
+                published = datetime.now()
+            for offset, text in segments:
+                for kw2 in keywords:
+                    if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word'])):
+                        # offset como segundos agregados -- cada segmento del mismo
+                        # video necesita un timestamp distinto para no chocar
+                        # contra el índice único (search_id, keyword, channel_id,
+                        # timestamp) y perder coincidencias reales.
+                        seg_ts = (published + timedelta(seconds=offset)).strftime('%Y-%m-%d %H:%M:%S')
+                        cur = adb.execute("""INSERT OR IGNORE INTO matches
+                            (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
+                            VALUES (?,?,?,?,?,?,?)""",
+                            (s['id'], kw2, YOUTUBE_CHANNEL_ID, vid['title'], seg_ts, text,
+                             f"{vid['url']}&t={int(offset)}s"))
+                        total += cur.rowcount
+            adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
+                        (vid['video_id'],))
+            adb.commit()
     return total
 
 
@@ -479,7 +563,55 @@ def _loop():
         time.sleep(POLL_INTERVAL)
 
 
+def _youtube_loop():
+    """Hilo separado del loop rápido de 5s (_loop) a propósito: descargar y
+    transcribir un video de YouTube por CPU puede tardar bastantes segundos
+    o minutos, y _loop() procesa TODAS las búsquedas activas de TV/radio
+    cada 5s -- si YouTube corriera ahí adentro, un solo video lento
+    congelaría la detección en vivo de todo lo demás. Revisa cada minuto
+    qué búsquedas ya están "due": la primera vez (youtube_last_fetch NULL,
+    apenas se creó/activó la búsqueda) o una vez al día después de
+    YOUTUBE_DAILY_HOUR si el último fetch fue un día anterior -- cuota de la
+    API es el límite, no la frescura de resultados."""
+    logger.info(f"YouTube loop iniciado (1 consulta al crear + 1 diaria a las {YOUTUBE_DAILY_HOUR}:00).")
+    while True:
+        try:
+            adb = _adb()
+            today = date.today().isoformat()
+            due = adb.execute(f"""
+                SELECT * FROM searches
+                WHERE status='active'
+                AND date_start <= ? AND date_end >= ?
+                AND media_types LIKE '%youtube%'
+                AND (
+                    youtube_last_fetch IS NULL
+                    OR (
+                        CAST(strftime('%H', 'now', 'localtime') AS INTEGER) >= {YOUTUBE_DAILY_HOUR}
+                        AND date(youtube_last_fetch) < date('now', 'localtime')
+                    )
+                )
+            """, (today, today)).fetchall()
+            for s in due:
+                keywords = json.loads(s['keywords'])
+                try:
+                    n = _poll_youtube_for_search(adb, s, keywords,
+                                                  date_from=s['date_start'], date_to=s['date_end'])
+                    if n:
+                        logger.info(f"[YouTube] Búsqueda {s['id']} '{s['name']}': {n} coincidencias nuevas.")
+                except Exception as e:
+                    logger.exception(f"[YouTube] Error procesando búsqueda {s['id']}: {e}")
+                adb.execute("UPDATE searches SET youtube_last_fetch=? WHERE id=?",
+                            (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), s['id']))
+                adb.commit()
+            adb.close()
+        except Exception as e:
+            logger.exception(f"Error en youtube_loop: {e}")
+        time.sleep(60)
+
+
 def start_watcher():
     t = threading.Thread(target=_loop, daemon=True, name='alertas-watcher')
     t.start()
+    ty = threading.Thread(target=_youtube_loop, daemon=True, name='alertas-youtube')
+    ty.start()
     return t
