@@ -209,19 +209,45 @@ def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] 
     el fetch histórico inicial); sin fecha trae lo más reciente, y el índice
     único de matches (search_id, keyword, channel_id, timestamp) ya evita
     duplicar un artículo visto en un poll anterior. exclude_words descarta
-    el artículo si su título contiene alguna palabra excluida."""
+    el artículo si su título contiene alguna palabra excluida.
+
+    Cada keyword dispara su PROPIA búsqueda en Google (gnews_fetch se llama
+    una vez por keyword) -- si la búsqueda tiene varias keywords que se
+    solapan (ej. "rocha", "rocha moya"), el MISMO artículo real aparece en
+    más de un resultado. Se dedupea por link Y por (título, fuente) --
+    el link de Google Noticias es una URL de redirección ofuscada que puede
+    variar entre una búsqueda y otra para el MISMO artículo real, así que
+    el link solo no basta. A diferencia de TV/radio, aquí no depende de
+    dedup_channel: es siempre el mismo artículo, nunca hay razón legítima
+    de guardarlo dos veces."""
     phonetic   = bool(s['phonetic'])
     whole_word = bool(s['whole_word'])
     total = 0
+    seen_links  = set()
+    seen_titles = set()
     for kw in keywords:
         for art in gnews_fetch(kw, date_from=date_from, date_to=date_to):
+            title_key = (art['title'], art['source'])
+            if art['link'] in seen_links or title_key in seen_titles:
+                continue
+            # Además de los sets en memoria (dedup dentro de esta corrida),
+            # se checa la base -- un poll anterior (cada NEWS_POLL_MINUTES)
+            # ya pudo haber guardado este mismo artículo bajo otra keyword.
+            if adb.execute("""SELECT 1 FROM matches
+                WHERE search_id=? AND (source_url=? OR (matched_text=? AND channel_name=?))""",
+                (s['id'], art['link'], art['title'], art['source'])).fetchone():
+                seen_links.add(art['link'])
+                seen_titles.add(title_key)
+                continue
             if _excluded(art['title'], exclude_words, phonetic, whole_word):
                 continue
+            seen_links.add(art['link'])
+            seen_titles.add(title_key)
             ts = art['published'].strftime('%Y-%m-%d %H:%M:%S')
             cur = adb.execute("""INSERT OR IGNORE INTO matches
-                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
-                VALUES (?,?,?,?,?,?,?)""",
-                (s['id'], kw, NEWS_CHANNEL_ID, art['source'], ts, art['title'], art['link']))
+                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (s['id'], kw, NEWS_CHANNEL_ID, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
             total += cur.rowcount
     return total
 
@@ -272,22 +298,29 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
                 published = datetime.fromisoformat(vid['published'].replace('Z', '+00:00'))
             except ValueError:
                 published = datetime.now()
+            dedup_on = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
             for offset, text in segments:
                 if _excluded(text, exclude_words, bool(s['phonetic']), bool(s['whole_word'])):
                     continue
-                for kw2 in keywords:
-                    if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word'])):
-                        # offset como segundos agregados -- cada segmento del mismo
-                        # video necesita un timestamp distinto para no chocar
-                        # contra el índice único (search_id, keyword, channel_id,
-                        # timestamp) y perder coincidencias reales.
-                        seg_ts = (published + timedelta(seconds=offset)).strftime('%Y-%m-%d %H:%M:%S')
-                        cur = adb.execute("""INSERT OR IGNORE INTO matches
-                            (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
-                            VALUES (?,?,?,?,?,?,?)""",
-                            (s['id'], kw2, YOUTUBE_CHANNEL_ID, vid['title'], seg_ts, text,
-                             f"{vid['url']}&t={int(offset)}s"))
-                        total += cur.rowcount
+                # Igual que TV/radio (ver _process): con dedup_on, varias
+                # keywords que matchean el MISMO segmento de 30s cuentan
+                # como una sola coincidencia, no una por keyword.
+                matching_kws = [kw2 for kw2 in keywords
+                                 if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word']))]
+                if dedup_on:
+                    matching_kws = matching_kws[:1]
+                for kw2 in matching_kws:
+                    # offset como segundos agregados -- cada segmento del mismo
+                    # video necesita un timestamp distinto para no chocar
+                    # contra el índice único (search_id, keyword, channel_id,
+                    # timestamp) y perder coincidencias reales.
+                    seg_ts = (published + timedelta(seconds=offset)).strftime('%Y-%m-%d %H:%M:%S')
+                    cur = adb.execute("""INSERT OR IGNORE INTO matches
+                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
+                        VALUES (?,?,?,?,?,?,?)""",
+                        (s['id'], kw2, YOUTUBE_CHANNEL_ID, vid['title'], seg_ts, text,
+                         f"{vid['url']}&t={int(offset)}s"))
+                    total += cur.rowcount
             adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
                         (vid['video_id'],))
             adb.commit()
@@ -299,9 +332,16 @@ def _process(adb, tdb, smtp, cfg=None):
     today = date.today().isoformat()
     now   = datetime.now()
 
-    # 1. Inicializar búsquedas nuevas (histórico desde date_start)
+    # 1. Inicializar búsquedas nuevas (histórico desde date_start) -- NO se
+    # filtra por status='active': initialized=0 ya es una señal explícita
+    # (búsqueda recién creada, o editada con needs_reinit en alerts/app.py)
+    # y nunca se pone así "por accidente". Filtrar por status dejaba
+    # atascada para siempre cualquier búsqueda editada cuyo date_end ya
+    # hubiera pasado -- _close_expired() la marca 'completed' en el mismo
+    # ciclo, y con el filtro de abajo el histórico (ya borrado por la
+    # edición) nunca se volvía a poblar.
     new_searches = adb.execute(
-        "SELECT * FROM searches WHERE initialized=0 AND status='active'"
+        "SELECT * FROM searches WHERE initialized=0"
     ).fetchall()
     for s in new_searches:
         keywords      = json.loads(s['keywords'])
@@ -310,6 +350,7 @@ def _process(adb, tdb, smtp, cfg=None):
         whole_word  = bool(s['whole_word'])
         media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
         dedup_on    = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
+        exclude_music = bool(s['exclude_music']) if 'exclude_music' in s.keys() and s['exclude_music'] is not None else True
         BATCH   = 2000
 
         # Contar total de registros en el rango para mostrar progreso
@@ -327,7 +368,7 @@ def _process(adb, tdb, smtp, cfg=None):
         total_hist   = 0
         while True:
             hist = tdb.execute("""
-                SELECT id, channel_id, channel_name, timestamp, text
+                SELECT id, channel_id, channel_name, timestamp, text, has_music
                 FROM transcriptions
                 WHERE id > ?
                   AND timestamp >= ? AND timestamp <= ?
@@ -345,6 +386,8 @@ def _process(adb, tdb, smtp, cfg=None):
                     continue
                 if channel_type(row['channel_id']) not in media_types:
                     continue
+                if exclude_music and 'has_music' in row.keys() and row['has_music']:
+                    continue
                 if _excluded(text, exclude_words, phonetic, whole_word):
                     continue
                 # Con "agrupar repeticiones cercanas" (dedup_on) activo, varias
@@ -361,10 +404,10 @@ def _process(adb, tdb, smtp, cfg=None):
                         continue
                     ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
                     adb.execute("""INSERT OR IGNORE INTO matches
-                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
-                        VALUES (?,?,?,?,?,?)""",
+                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text, has_music)
+                        VALUES (?,?,?,?,?,?,?)""",
                         (s['id'], kw, row['channel_id'], row['channel_name'],
-                         row['timestamp'], ctx))
+                         row['timestamp'], ctx, int(row['has_music']) if 'has_music' in row.keys() else 0))
             last_hist_id  = hist[-1]['id']
             total_hist   += len(hist)
             adb.execute(
@@ -405,7 +448,7 @@ def _process(adb, tdb, smtp, cfg=None):
     # 2. Procesar nuevas transcripciones (delta desde último ID)
     last_id = int(_get_setting(adb, 'watcher_last_id', '0'))
     rows = tdb.execute("""
-        SELECT id, channel_id, channel_name, timestamp, text
+        SELECT id, channel_id, channel_name, timestamp, text, has_music
         FROM transcriptions WHERE id > ?
         ORDER BY id ASC LIMIT 500
     """, (last_id,)).fetchall()
@@ -441,6 +484,9 @@ def _process(adb, tdb, smtp, cfg=None):
                 phonetic   = bool(s['phonetic'])
                 whole_word = bool(s['whole_word'])
                 dedup_on   = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
+                exclude_music = bool(s['exclude_music']) if 'exclude_music' in s.keys() and s['exclude_music'] is not None else True
+                if exclude_music and 'has_music' in row.keys() and row['has_music']:
+                    continue
                 if _excluded(text, exclude_words, phonetic, whole_word):
                     continue
                 # Ver mismo comentario en el bloque de histórico más arriba --
@@ -457,10 +503,10 @@ def _process(adb, tdb, smtp, cfg=None):
                     # llegó, si no cae al texto del chunk solo, sin error.
                     ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
                     adb.execute("""INSERT OR IGNORE INTO matches
-                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text)
-                        VALUES (?,?,?,?,?,?)""",
+                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text, has_music)
+                        VALUES (?,?,?,?,?,?,?)""",
                         (s['id'], kw, row['channel_id'], row['channel_name'],
-                         row['timestamp'], ctx))
+                         row['timestamp'], ctx, int(row['has_music']) if 'has_music' in row.keys() else 0))
 
                     base = {
                         'search_id':   s['id'],

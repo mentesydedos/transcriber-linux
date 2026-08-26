@@ -50,6 +50,20 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    # "Ver grabación completa" en resultados de búsqueda: mismo bloque de 30
+    # min que sirve la Videoteca (con remux/caché la primera vez en canales
+    # que aún son .ts/.mkv), así que necesita el mismo timeout largo -- sin
+    # esto Nginx cortaba la conexión a los 60s (default de "location /") y
+    # adelantar/atrasar en el reproductor se sentía lento o se caía.
+    location ~ ^/searches/\d+/matches/\d+/full_(video\.mp4|audio\.m4a)$ {
+        proxy_pass http://127.0.0.1:8002;
+        proxy_http_version 1.1;
+        proxy_read_timeout 1200s;
+        proxy_send_timeout 1200s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     # Resto del dashboard: timeouts normales.
     location / {
         proxy_pass http://127.0.0.1:8001;

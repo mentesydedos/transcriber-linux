@@ -9,6 +9,7 @@ venv-cohere/
 venv-parakeet/
 venv-rag/
 venv-video/
+venv-music/
 env/
 .env
 
@@ -28,6 +29,9 @@ local.m3u
 
 # Cache de snapshots/clips de video generados on-demand
 alerts/cache/
+
+# Descargas parciales de YouTube en curso
+tmp_youtube/
 
 # Logs
 logs/

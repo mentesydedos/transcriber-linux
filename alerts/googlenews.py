@@ -61,9 +61,12 @@ def _clean_title(raw_title: str, source: str) -> str:
 
 def fetch_articles(query: str, date_from: str | None = None, date_to: str | None = None,
                     limit: int = 50) -> list[dict]:
-    """Devuelve [{title, link, source, published}] para una keyword.
-    date_from/date_to en formato 'YYYY-MM-DD' (opcional, acota con
-    after:/before:). published es datetime naive en hora local."""
+    """Devuelve [{title, link, source, source_domain, published}] para una
+    keyword. date_from/date_to en formato 'YYYY-MM-DD' (opcional, acota con
+    after:/before:). published es datetime naive en hora local.
+    source_domain viene del atributo url="..." de <source> (ej.
+    "www.infobae.com") -- se usa para mostrar el favicon del medio, no para
+    nada crítico, así que None si no viene (no debe tumbar el fetch)."""
     url = _build_url(query, date_from, date_to)
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     try:
@@ -88,6 +91,10 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
         link      = (item.findtext('link') or '').strip()
         source_el = item.find('source')
         source    = (source_el.text or '').strip() if source_el is not None else ''
+        source_domain = None
+        if source_el is not None:
+            source_url = source_el.get('url') or ''
+            source_domain = urllib.parse.urlparse(source_url).netloc or None
         pub_raw   = item.findtext('pubDate') or ''
         if not raw_title or not link or not pub_raw:
             continue
@@ -98,9 +105,10 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
         except Exception:
             continue
         out.append({
-            'title':     _clean_title(raw_title, source),
-            'link':      link,
-            'source':    source or 'Google Noticias',
-            'published': pub_dt,
+            'title':         _clean_title(raw_title, source),
+            'link':          link,
+            'source':        source or 'Google Noticias',
+            'source_domain': source_domain,
+            'published':     pub_dt,
         })
     return out

@@ -32,7 +32,7 @@
     {% for c in chunks %}
     <div class="ta-row d-flex align-items-start" data-time="{{ c.timestamp[11:16] }}">
       <div class="ta-row-time">{{ c.timestamp[11:16] }}</div>
-      <div class="ta-row-text">{{ c.text }}</div>
+      <div class="ta-row-text">{% if c.has_music %}<span title="Música detectada por audio">🎵</span> {% endif %}{{ c.text }}</div>
       {% if c.clip_url %}
       <a href="{{ c.clip_url }}" target="_blank" rel="noopener noreferrer" class="ta-row-clip" title="Escuchar/ver el bloque">
         <i class="bi bi-play-circle"></i>

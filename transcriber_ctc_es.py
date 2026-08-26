@@ -40,6 +40,20 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# NOTA (2026-08-26): la detección de música corre aislada, en su propio
+# proceso/venv (music_classifier_server.py, venv-music, sin onnxruntime-gpu
+# ni paquetes nvidia-*) -- se le habla por socket Unix vía
+# music_classifier_client.py. El primer intento la importaba directo aquí
+# (music_classifier.py); aunque pedía CPUExecutionProvider explícito, este
+# venv (venv-parakeet) tiene onnxruntime-gpu instalado para Parakeet/CTC-ES,
+# y el mismo día el motor de radio entró en OOM de CUDA justo tras
+# activarla -- no se pudo descartar que el paquete GPU reservara contexto
+# CUDA solo con inicializarse. Con el clasificador en un venv sin ningún
+# paquete CUDA, eso es imposible por diseño. Si el servidor está caído o
+# tarda, el cliente falla en silencio (has_music=False) -- nunca frena la
+# transcripción en vivo.
+import music_classifier_client
+
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_DIR         = Path(os.environ.get("TRANSCRIBER_CTC_ES_MODEL_DIR", "./models/parakeet-ctc-es"))
 ONNX_FILE         = MODEL_DIR / "model_graph_fixed.onnx"
@@ -84,7 +98,8 @@ def setup_logger(worker_name: str = "transcriber") -> logging.Logger:
 _db_lock = threading.Lock()
 
 def save_to_db(channel_id: int, channel_name: str, text: str,
-               duration: float, start_ts: str = None, source: str = "asr") -> str:
+               duration: float, start_ts: str = None, source: str = "asr",
+               has_music: bool = False) -> str:
     if start_ts:
         try:
             dt = datetime.fromisoformat(start_ts)
@@ -101,9 +116,9 @@ def save_to_db(channel_id: int, channel_name: str, text: str,
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.execute(
                 """INSERT INTO transcriptions
-                   (channel_id, channel_name, timestamp, unix_ts, text, confidence, duration_sec, source)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (channel_id, channel_name, ts, unix_ts, text, None, duration, source))
+                   (channel_id, channel_name, timestamp, unix_ts, text, confidence, duration_sec, source, has_music)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (channel_id, channel_name, ts, unix_ts, text, None, duration, source, int(has_music)))
             rowid = cursor.lastrowid
             conn.execute(
                 "INSERT INTO transcriptions_fts(rowid, text, channel_name) VALUES (?,?,?)",
@@ -323,10 +338,14 @@ def run(audio_queue, model_name: str = None, device: str = "cpu",
             continue
         elapsed = time.time() - t0
 
+        # has_music=False si el servidor aislado no responde a tiempo (ver
+        # nota al inicio del archivo) -- fallback seguro, nunca frena esto.
+        has_music = music_classifier_client.is_music(chunk)
+
         if cid not in file_windows:
             file_windows[cid] = FileWindow(cid, cname)
         try:
-            save_to_db(cid, cname, text or "[~]", chunk_sec, start_ts=start_ts)
+            save_to_db(cid, cname, text or "[~]", chunk_sec, start_ts=start_ts, has_music=has_music)
         except Exception as e:
             logger.error(f"[{cid:02d}] Error guardando en DB: {e}")
             continue

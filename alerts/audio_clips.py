@@ -99,6 +99,21 @@ def _segment_at(segs: list[tuple[datetime, Path]], moment: datetime):
     return dt, path, dur
 
 
+def locate_segment(station_num: int, moment: datetime):
+    """Devuelve (path, offset_seconds) del bloque de 30 min que contiene
+    `moment` -- para reproducir la grabación completa (no solo el clip de
+    ±10s) y poder adelantar/atrasar libremente, ver match_full_audio en
+    alerts/app.py."""
+    segs = _list_segments(station_num, around=moment)
+    if not segs:
+        return None
+    found = _segment_at(segs, moment)
+    if not found:
+        return None
+    dt, path, _ = found
+    return path, (moment - dt).total_seconds()
+
+
 def _clip_window(station_num: int, moment: datetime, before: float, after: float):
     segs = _list_segments(station_num, around=moment)
     if not segs:

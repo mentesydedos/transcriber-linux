@@ -1,0 +1,29 @@
+[Unit]
+Description=Detector de musica por audio (YAMNet ONNX), aislado de la GPU
+After=network.target
+
+[Service]
+Type=simple
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+# venv-music: SOLO numpy + onnxruntime (CPU). Nunca instalar aqui
+# onnxruntime-gpu ni ningun paquete nvidia-* -- ver la nota larga en
+# music_classifier_server.py sobre el incidente de OOM del 2026-08-26 que
+# motivo separar esto de venv-parakeet.
+Environment="PATH=/home/transcriber/transcriber-linux/venv-music/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Defensa adicional (no deberia hacer falta dado el venv, pero es gratis):
+# aunque algo intentara usar CUDAExecutionProvider, esto se lo impide a
+# nivel de driver.
+Environment="CUDA_VISIBLE_DEVICES="
+ExecStart=/home/transcriber/transcriber-linux/venv-music/bin/python music_classifier_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

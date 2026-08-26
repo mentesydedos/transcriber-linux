@@ -146,19 +146,32 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     md = dict(m)
     text = md.get('matched_text') or ''
     kw   = md.get('keyword') or ''
+    md['channel_kind'] = channel_type(md.get('channel_id'))
 
     # precise_timestamp asume que el índice/total de palabras corresponden a
-    # UN chunk de CHUNK_SECONDS (30s). Como matched_text puede traer pegados
-    # el chunk previo y/o el siguiente para dar más contexto, se busca la
-    # keyword SOLO dentro del chunk original (nunca en los pegados -- podría
-    # aparecer por casualidad ahí y hacer que se centre en la ocurrencia
-    # equivocada) y se usa ese conteo de palabras, no el del texto completo
-    # -- si no, la fracción se diluye con las palabras pegadas y el
-    # timestamp estimado queda mal, sobre todo cerca del inicio/final del
-    # chunk original, justo los casos que esto arregla.
-    current_chunk = _current_chunk_span(text)
-    idx_chunk, total_chunk = _locate_keyword(current_chunk, kw, phonetic=phonetic, whole_word=whole_word)
-    md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx_chunk, total_chunk)
+    # UN chunk de CHUNK_SECONDS (30s) de audio -- válido para TV/radio/
+    # YouTube (todos transcritos en ventanas de 30s reales), pero NO para
+    # Google Noticias: ahí matched_text es el título del artículo, no un
+    # fragmento cronometrado, y aplicarle esta fórmula desplazaba el
+    # timestamp hasta ~30s de más según en qué palabra del título cayera la
+    # keyword -- eso descuadraba el orden cronológico frente a TV/radio al
+    # combinarse en la misma tabla. Para noticias se usa el timestamp real
+    # (la hora de publicación) tal cual, sin ajuste.
+    if md['channel_kind'] == 'news':
+        idx_chunk = None
+        md['precise_timestamp'] = md.get('timestamp')
+    else:
+        # Como matched_text puede traer pegados el chunk previo y/o el
+        # siguiente para dar más contexto, se busca la keyword SOLO dentro
+        # del chunk original (nunca en los pegados -- podría aparecer por
+        # casualidad ahí y hacer que se centre en la ocurrencia equivocada)
+        # y se usa ese conteo de palabras, no el del texto completo -- si
+        # no, la fracción se diluye con las palabras pegadas y el timestamp
+        # estimado queda mal, sobre todo cerca del inicio/final del chunk
+        # original, justo los casos que esto arregla.
+        current_chunk = _current_chunk_span(text)
+        idx_chunk, total_chunk = _locate_keyword(current_chunk, kw, phonetic=phonetic, whole_word=whole_word)
+        md['precise_timestamp'] = _precise_timestamp(md.get('timestamp'), idx_chunk, total_chunk)
 
     # Posición de esa misma ocurrencia dentro del texto COMPLETO (con
     # contexto pegado), para centrar el snippet mostrado -- se calcula
@@ -173,7 +186,12 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     raw_centered = _center_text(text, idx_full, words_each_side=50)
     cleaned = raw_centered.replace(CHUNK_SEP_PREV, ' ').replace(CHUNK_SEP_NEXT, ' ')
     md['centered_text'] = re.sub(r' {2,}', ' ', cleaned).strip()
-    md['channel_kind']  = channel_type(md.get('channel_id'))
+    if md['channel_kind'] == 'youtube' and md.get('source_url'):
+        # Miniatura pública de YouTube -- imagen estática de su propio CDN,
+        # sin descargar/procesar nada de nuestro lado (a diferencia del
+        # snapshot de TV, que sí recorta un frame real por ffmpeg).
+        m_vid = re.search(r'[?&]v=([\w-]{11})', md['source_url'])
+        md['youtube_video_id'] = m_vid.group(1) if m_vid else None
     return md
 
 def _highlight(text, keyword, phonetic=False, whole_word=False):
@@ -397,6 +415,14 @@ def _init_db():
         # "reprochar"/"derrochar" (que la contienen como substring, ver
         # alerts/watcher.py _excluded()). JSON, igual formato que keywords.
         ('exclude_words',    "TEXT DEFAULT '[]'"),
+        # Omitir fragmentos de TV/radio marcados con música (ver
+        # music_classifier.py, transcriptions.has_music) al buscar -- un
+        # comercial/canción rara vez es relevante para una búsqueda de texto
+        # normal. Default 1 (excluir) tanto para búsquedas nuevas como ya
+        # existentes: es seguro retroactivamente porque el historial previo
+        # a esta función nunca se clasificó (has_music=0 siempre), así que
+        # no oculta nada que ya existiera.
+        ('exclude_music',    'INTEGER DEFAULT 1'),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -412,6 +438,26 @@ def _init_db():
         # URL del artículo original -- solo se llena para matches de Google
         # Noticias (channel_id=NEWS_CHANNEL_ID); NULL para TV/radio.
         conn.execute("ALTER TABLE matches ADD COLUMN source_url TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        # Dominio del medio (ej. "www.infobae.com") -- solo Google Noticias,
+        # viene del atributo url="..." de <source> en el feed RSS (ver
+        # alerts/googlenews.py). Se usa para mostrar el favicon del medio en
+        # los resultados, gratis (servicio público de favicons, sin scrapear
+        # cada artículo por su imagen real).
+        conn.execute("ALTER TABLE matches ADD COLUMN channel_domain TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        # Copia de transcriptions.has_music al momento del match -- solo
+        # TV/radio (watcher.py la llena ahí). Se guarda aquí en vez de
+        # buscarla en vivo por join porque matches ya desnormaliza
+        # channel_name/timestamp/etc. con el mismo criterio, y así no hace
+        # falta ir a transcriptions.db (otra base) para mostrar el ícono.
+        conn.execute("ALTER TABLE matches ADD COLUMN has_music INTEGER DEFAULT 0")
         conn.commit()
     except Exception:
         pass
@@ -765,6 +811,7 @@ def create_app() -> Flask:
             phonetic      = 1 if request.form.get('phonetic') else 0
             whole_word    = 1 if request.form.get('whole_word') else 0
             dedup_channel = 1 if request.form.get('dedup_channel') else 0
+            exclude_music = 1 if request.form.get('exclude_music') else 0
             d_start       = request.form.get('date_start', '')
             d_end         = request.form.get('date_end', '')
             dmode         = request.form.get('delivery_mode', 'final')
@@ -780,12 +827,12 @@ def create_app() -> Flask:
                 cur = db().execute("""
                     INSERT INTO searches
                       (user_id,name,keywords,exclude_words,phonetic,whole_word,date_start,date_end,
-                       delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?)
+                       delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel,exclude_music)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
                       json.dumps(excl, ensure_ascii=False),
                       phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types,
-                      dedup_channel))
+                      dedup_channel, exclude_music))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada. Procesando el histórico…', 'success')
                 # Al detalle, no al dashboard -- ahí ya está el banner de progreso
@@ -935,6 +982,15 @@ def create_app() -> Flask:
             if m['timestamp']:
                 prog_map[m['id']] = get_programme_at(d, m['channel_name'] or '', m['timestamp'])
 
+        # El auto-refresh en vivo (poll cada 8s) solo tiene sentido si a esta
+        # búsqueda TODAVÍA le puede llegar algo nuevo -- si ya pasó su
+        # date_end o está pausada/completada, no hay nada que esperar, y
+        # además el mecanismo (after_id, sin respetar paginación) inyectaba
+        # filas de otras páginas a la página 1 con solo con=8001 activo (ver
+        # el bug real: id de inserción no corresponde al orden cronológico
+        # en búsquedas históricas ya completas).
+        live_eligible = (s['status'] == 'active' and s['date_end'] >= date.today().isoformat())
+
         return render_template('search_detail.html',
             s=s, keywords=json.loads(s['keywords']),
             matches=matches, total=total, page=page, pp=pp,
@@ -946,6 +1002,7 @@ def create_app() -> Flask:
             kw_stats=kw_stats, ch_stats=ch_stats,
             heatmap=heatmap, hm_max=hm_max, hm_dates=hm_dates_list,
             prog_map=prog_map,
+            live_eligible=live_eligible,
         )
 
     @app.route('/searches/<int:sid>/similarities')
@@ -1051,6 +1108,71 @@ def create_app() -> Flask:
             if not extract_clip(m['channel_id'], moment, out):
                 return ('', 404)
         return send_file(out, mimetype='audio/mp4')
+
+    @app.route('/searches/<int:sid>/matches/<int:mid>/full_media')
+    @login_required
+    def match_full_media(sid, mid):
+        """URL + segundo exacto para reproducir la grabación COMPLETA de 30
+        min (no el clip recortado de ±10s) -- así se puede adelantar/atrasar
+        libremente en vez de quedar atado a la ventana fija. El JS del modal
+        pide esto primero, luego pone src=url y currentTime=offset."""
+        from alerts.channel_types import channel_type
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment:
+            return jsonify(error='not found'), 404
+        kind = channel_type(m['channel_id'])
+        if kind == 'tv':
+            from alerts.clips import locate_frame
+            found = locate_frame(m['channel_name'] or '', moment)
+            if not found:
+                return jsonify(error='not found'), 404
+            _, offset = found
+            return jsonify(kind='tv', url=f'/searches/{sid}/matches/{mid}/full_video.mp4', offset=offset)
+        elif kind == 'radio':
+            from alerts.audio_clips import locate_segment
+            if m['channel_id'] is None:
+                return jsonify(error='not found'), 404
+            found = locate_segment(m['channel_id'], moment)
+            if not found:
+                return jsonify(error='not found'), 404
+            _, offset = found
+            return jsonify(kind='radio', url=f'/searches/{sid}/matches/{mid}/full_audio.m4a', offset=offset)
+        return jsonify(error='not applicable'), 404
+
+    @app.route('/searches/<int:sid>/matches/<int:mid>/full_video.mp4')
+    @login_required
+    def match_full_video(sid, mid):
+        """Sirve el bloque de 30 min COMPLETO (no el clip recortado) --
+        mismo remux/caché que la Videoteca (get_or_build_clip), así que
+        .ts/.mkv en vivo también se sirven reproducibles."""
+        from alerts.clips import locate_frame
+        from alerts.library import get_or_build_clip
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment or m['channel_id'] is None:
+            return ('', 404)
+        found = locate_frame(m['channel_name'] or '', moment)
+        if not found:
+            return ('', 404)
+        path, _ = found
+        clip = get_or_build_clip(m['channel_id'], path.parent, path.name)
+        if clip is None:
+            return ('', 404)
+        return send_file(clip, mimetype='video/mp4', conditional=True)
+
+    @app.route('/searches/<int:sid>/matches/<int:mid>/full_audio.m4a')
+    @login_required
+    def match_full_audio(sid, mid):
+        """Sirve el bloque de 30 min COMPLETO de audio (no el clip
+        recortado) -- ya es .aac reproducible directo, sin remux."""
+        from alerts.audio_clips import locate_segment
+        m, moment = _match_moment(sid, mid)
+        if not m or not moment or m['channel_id'] is None:
+            return ('', 404)
+        found = locate_segment(m['channel_id'], moment)
+        if not found:
+            return ('', 404)
+        path, _ = found
+        return send_file(path, mimetype='audio/aac', conditional=True)
 
     @app.route('/searches/<int:sid>/matches/<int:mid>/delete', methods=['POST'])
     @login_required
@@ -1314,8 +1436,11 @@ def create_app() -> Flask:
             # No entra en needs_reinit: solo cambia cómo se cuentan las coincidencias
             # DE AQUÍ EN ADELANTE, no reinterpreta lo ya escaneado.
             new_dedup  = 1 if request.form.get('dedup_channel') else 0
+            new_exclude_music = 1 if request.form.get('exclude_music') else 0
 
-            # Si cambian fechas, palabras, exclusiones, tipo de búsqueda o medios → re-escanear histórico
+            # Si cambian fechas, palabras, exclusiones, tipo de búsqueda, medios
+            # o el filtro de música → re-escanear histórico (exclude_music SÍ
+            # cambia qué filas califican, a diferencia de dedup_channel).
             needs_reinit = (
                 new_start != s['date_start']  or
                 new_end   != s['date_end']    or
@@ -1323,20 +1448,21 @@ def create_app() -> Flask:
                 new_excl  != (s['exclude_words'] if 'exclude_words' in s.keys() and s['exclude_words'] else '[]') or
                 new_phon  != s['phonetic']    or
                 new_whole != s['whole_word']  or
-                new_media != (s['media_types'] if 'media_types' in s.keys() else 'tv,radio')
+                new_media != (s['media_types'] if 'media_types' in s.keys() else 'tv,radio') or
+                new_exclude_music != (s['exclude_music'] if 'exclude_music' in s.keys() and s['exclude_music'] is not None else 1)
             )
 
             db().execute("""
                 UPDATE searches SET
                   name=?, keywords=?, exclude_words=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
-                  initialized=?, media_types=?, dedup_channel=?
+                  initialized=?, media_types=?, dedup_channel=?, exclude_music=?
                 WHERE id=?
             """, (name, new_kws, new_excl, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
-                  0 if needs_reinit else s['initialized'], new_media, new_dedup,
+                  0 if needs_reinit else s['initialized'], new_media, new_dedup, new_exclude_music,
                   sid))
 
             if needs_reinit:

@@ -414,11 +414,22 @@
                  onerror="this.style.visibility='hidden'">
             {% elif m.channel_kind == 'news' %}
             <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">
+              {% if m.channel_domain %}
+              <img src="https://www.google.com/s2/favicons?domain={{ m.channel_domain }}&sz=64" loading="lazy"
+                   class="match-thumb match-thumb-favicon"
+                   onerror="this.replaceWith(Object.assign(document.createElement('i'), {className:'bi bi-box-arrow-up-right', style:'color:var(--accent)'}))">
+              {% else %}
               <i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i>
+              {% endif %}
             </a>
             {% elif m.channel_kind == 'youtube' %}
             <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)">
+              {% if m.youtube_video_id %}
+              <img src="https://i.ytimg.com/vi/{{ m.youtube_video_id }}/mqdefault.jpg" loading="lazy"
+                   class="match-thumb" onerror="this.replaceWith(Object.assign(document.createElement('i'), {className:'bi bi-youtube', style:'color:#ff0000'}))">
+              {% else %}
               <i class="bi bi-youtube" style="color:#ff0000"></i>
+              {% endif %}
             </a>
             {% else %}
             <button type="button" class="btn-audio-clip" title="Escuchar clip (±10s)"
@@ -440,7 +451,7 @@
           </td>
           <td style="vertical-align:middle">
             <div class="mtext mtext-wide" data-bs-toggle="tooltip">
-              {{ m.centered_text | highlight(m.keyword, s.phonetic, s.whole_word) }}
+              {% if m.has_music %}<span title="Música detectada por audio">🎵</span> {% endif %}{{ m.centered_text | highlight(m.keyword, s.phonetic, s.whole_word) }}
             </div>
             <div class="mtext-full" hidden>{{ m.matched_text | highlight(m.keyword, s.phonetic, s.whole_word) }}</div>
           </td>
@@ -507,6 +518,11 @@
         <audio id="clipAudio" class="w-100 d-none" controls preload="none"></audio>
         <div id="clipError" class="text-danger small d-none">
           No hay grabación disponible para este momento/canal.
+        </div>
+        <div id="clipExpandRow" class="mt-2 d-none">
+          <button type="button" id="clipExpandBtn" class="btn btn-sm" style="background:var(--green);color:#06240f;border:none">
+            <i class="bi bi-arrows-angle-expand me-1"></i>Ver grabación completa (adelantar/atrasar libremente)
+          </button>
         </div>
       </div>
     </div>
@@ -607,7 +623,15 @@
 <script>
 // Live auto-refresh: poll for new matches every 8 seconds
 (function() {
-  let lastId = {{ matches[0].id if matches else 0 }};
+  // El id MÁS ALTO entre lo ya mostrado, no matches[0].id -- la tabla se
+  // reordena por precise_timestamp (ver la vista), así que matches[0] ya
+  // NO es necesariamente el id más alto (ej. una búsqueda histórica donde
+  // TV/radio se insertó con ids más bajos pero timestamps más recientes
+  // que algunos artículos de Google Noticias con ids más altos). Con
+  // matches[0].id, el auto-refresh (after_id=lastId) volvía a traer filas
+  // YA mostradas como si fueran nuevas cada 8s -- se veían duplicadas en
+  // pantalla aunque la base de datos nunca tuvo la fila repetida.
+  let lastId = {{ (matches | map(attribute='id') | max) if matches else 0 }};
   const tbody = document.querySelector('.table tbody');
   const totalCountEls = document.querySelectorAll('#total-count');
   // Also update the inline total badge in card header
@@ -672,13 +696,22 @@
     const ts       = m.precise_timestamp || m.timestamp || '';
     const fat      = ts.slice(0, 19);
     const fullTxt  = m.matched_highlighted || esc(m.matched_text || '');
-    const txt      = m.centered_highlighted || esc(m.centered_text || m.matched_text || '');
+    const musicTag = m.has_music ? '<span title="Música detectada por audio">🎵</span> ' : '';
+    const txt      = musicTag + (m.centered_highlighted || esc(m.centered_text || m.matched_text || ''));
     const clipCell = m.channel_kind === 'tv'
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
       : m.channel_kind === 'news'
-      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original"><i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i></a>`
+      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">${
+          m.channel_domain
+            ? `<img src="https://www.google.com/s2/favicons?domain=${esc(m.channel_domain)}&sz=64" loading="lazy" class="match-thumb match-thumb-favicon" onerror="this.replaceWith(Object.assign(document.createElement('i'), {className:'bi bi-box-arrow-up-right', style:'color:var(--accent)'}))">`
+            : `<i class="bi bi-box-arrow-up-right" style="color:var(--accent)"></i>`
+        }</a>`
       : m.channel_kind === 'youtube'
-      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)"><i class="bi bi-youtube" style="color:#ff0000"></i></a>`
+      ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Ver video en YouTube (al segundo exacto)">${
+          m.youtube_video_id
+            ? `<img src="https://i.ytimg.com/vi/${esc(m.youtube_video_id)}/mqdefault.jpg" loading="lazy" class="match-thumb" onerror="this.replaceWith(Object.assign(document.createElement('i'), {className:'bi bi-youtube', style:'color:#ff0000'}))">`
+            : `<i class="bi bi-youtube" style="color:#ff0000"></i>`
+        }</a>`
       : `<button type="button" class="btn-audio-clip" title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, ${m.id})"><i class="bi bi-play-circle-fill"></i></button>`;
     return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}" data-mid="${m.id}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
@@ -759,7 +792,9 @@
       .catch(() => {});
   }
 
+  {% if live_eligible %}
   setInterval(refresh, 8000);
+  {% endif %}
 })();
 </script>
 <style>
@@ -808,6 +843,7 @@
   transition: border-color .15s, transform .15s;
 }
 .match-thumb:hover { border-color: var(--green); transform: scale(1.08); }
+.match-thumb-favicon { object-fit: contain; padding: 8px; background: #fff; }
 
 .btn-audio-clip {
   background: var(--card2); border: 1px solid var(--border); border-radius: 5px;
@@ -846,17 +882,28 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
 
 // Modal de snapshot + clip: carga perezosa, solo al hacer click en la fila.
 (function() {
-  var modalEl   = document.getElementById('clipModal');
-  var modal     = new bootstrap.Modal(modalEl);
-  var loading   = document.getElementById('clipLoading');
-  var loadingTx = document.getElementById('clipLoadingText');
-  var titleEl   = document.getElementById('clipModalTitle');
-  var imgEl     = document.getElementById('clipSnapshot');
-  var videoEl   = document.getElementById('clipVideo');
-  var audioEl   = document.getElementById('clipAudio');
-  var errorEl   = document.getElementById('clipError');
+  var modalEl    = document.getElementById('clipModal');
+  var modal      = new bootstrap.Modal(modalEl);
+  var loading    = document.getElementById('clipLoading');
+  var loadingTx  = document.getElementById('clipLoadingText');
+  var titleEl    = document.getElementById('clipModalTitle');
+  var imgEl      = document.getElementById('clipSnapshot');
+  var videoEl    = document.getElementById('clipVideo');
+  var audioEl    = document.getElementById('clipAudio');
+  var errorEl    = document.getElementById('clipError');
+  var expandRow  = document.getElementById('clipExpandRow');
+  var expandBtn  = document.getElementById('clipExpandBtn');
+  var current    = null; // {searchId, matchId, kind}
+
+  function resetExpand() {
+    expandRow.classList.add('d-none');
+    expandBtn.disabled = false;
+    expandBtn.innerHTML = '<i class="bi bi-arrows-angle-expand me-1"></i>Ver grabación completa (adelantar/atrasar libremente)';
+  }
 
   window.openClip = function(searchId, matchId) {
+    current = { searchId: searchId, matchId: matchId, kind: 'tv' };
+    resetExpand();
     loading.classList.remove('d-none');
     loadingTx.textContent = 'Generando snapshot y video…';
     titleEl.innerHTML = '<i class="bi bi-camera-video me-2"></i>Snapshot y video (±10s)';
@@ -869,7 +916,7 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
     videoEl.load();
 
     var base = '/searches/' + searchId + '/matches/' + matchId;
-    imgEl.onload  = function() { loading.classList.add('d-none'); imgEl.classList.remove('d-none'); };
+    imgEl.onload  = function() { loading.classList.add('d-none'); imgEl.classList.remove('d-none'); expandRow.classList.remove('d-none'); };
     imgEl.onerror = function() { loading.classList.add('d-none'); errorEl.classList.remove('d-none'); };
     imgEl.src = base + '/snapshot.jpg?_=' + Date.now();
     videoEl.src = base + '/clip.mp4';
@@ -878,6 +925,8 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
   };
 
   window.openAudioClip = function(searchId, matchId) {
+    current = { searchId: searchId, matchId: matchId, kind: 'radio' };
+    resetExpand();
     loading.classList.remove('d-none');
     loadingTx.textContent = 'Generando clip de audio…';
     titleEl.innerHTML = '<i class="bi bi-soundwave me-2"></i>Clip de audio (±10s)';
@@ -890,11 +939,50 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
     audioEl.load();
 
     var base = '/searches/' + searchId + '/matches/' + matchId;
-    audioEl.oncanplay = function() { loading.classList.add('d-none'); audioEl.classList.remove('d-none'); };
+    audioEl.oncanplay = function() { loading.classList.add('d-none'); audioEl.classList.remove('d-none'); expandRow.classList.remove('d-none'); };
     audioEl.onerror   = function() { loading.classList.add('d-none'); errorEl.classList.remove('d-none'); };
     audioEl.src = base + '/audio_clip.m4a';
     modal.show();
   };
+
+  // "Ver grabación completa": cambia el reproductor del clip recortado
+  // (±10s) al bloque de 30 min entero, posicionado exactamente en el
+  // segundo de la coincidencia -- de ahí en adelante se puede adelantar/
+  // atrasar libremente con los controles nativos del reproductor.
+  expandBtn.addEventListener('click', function () {
+    if (!current) return;
+    expandBtn.disabled = true;
+    expandBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Cargando…';
+    fetch('/searches/' + current.searchId + '/matches/' + current.matchId + '/full_media')
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+      .then(function (data) {
+        var el = current.kind === 'tv' ? videoEl : audioEl;
+        el.pause();
+        var onReady = function () {
+          el.currentTime = data.offset;
+          el.play().catch(function () {});
+          el.removeEventListener('loadedmetadata', onReady);
+        };
+        var onLoadError = function () {
+          // Si la ruta de la grabación completa falla YA cargado el <video>,
+          // el navegador muestra su propia pantalla gris genérica -- se
+          // reemplaza por el mismo cartel de error estilizado del modal.
+          el.classList.add('d-none');
+          errorEl.classList.remove('d-none');
+          el.removeEventListener('error', onLoadError);
+        };
+        el.addEventListener('loadedmetadata', onReady);
+        el.addEventListener('error', onLoadError);
+        el.src = data.url;
+        el.load();
+        expandRow.classList.add('d-none'); // ya no hay a dónde más expandir
+      })
+      .catch(function () {
+        expandBtn.disabled = false;
+        expandBtn.innerHTML = '<i class="bi bi-arrows-angle-expand me-1"></i>Ver grabación completa (adelantar/atrasar libremente)';
+        alert('No se pudo cargar la grabación completa.');
+      });
+  });
 
   // Al cerrar, detener el video para no seguir consumiendo ancho de banda.
   modalEl.addEventListener('hidden.bs.modal', function() {

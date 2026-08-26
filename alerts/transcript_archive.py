@@ -101,7 +101,7 @@ def list_chunks(channel_id: int, date: str) -> list[dict]:
     next_date = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     conn = _tdb()
     rows = conn.execute("""
-        SELECT timestamp, text FROM transcriptions
+        SELECT timestamp, text, has_music FROM transcriptions
         WHERE channel_id=? AND timestamp >= ? AND timestamp < ?
         ORDER BY timestamp ASC
     """, (channel_id, date, next_date)).fetchall()
@@ -132,6 +132,7 @@ def list_chunks(channel_id: int, date: str) -> list[dict]:
             "timestamp": r["timestamp"],
             "text": text,
             "clip_url": block_cache[block_key],
+            "has_music": bool(r["has_music"]) if "has_music" in r.keys() else False,
         })
     return chunks
 

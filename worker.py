@@ -84,6 +84,12 @@ def init_db():
     tcols = {r[1] for r in conn.execute("PRAGMA table_info(transcriptions)").fetchall()}
     if "source" not in tcols:
         conn.execute("ALTER TABLE transcriptions ADD COLUMN source TEXT DEFAULT 'asr'")
+    if "has_music" not in tcols:
+        # Detección de música por audio (YAMNet, ver music_classifier.py) --
+        # no descarta nada, solo marca el fragmento para que las búsquedas
+        # puedan excluirlo opcionalmente. Default 0 para no marcar como
+        # música las filas históricas (nunca se clasificaron).
+        conn.execute("ALTER TABLE transcriptions ADD COLUMN has_music INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
