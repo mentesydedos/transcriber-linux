@@ -83,6 +83,56 @@ def _ffprobe_duration(path: Path) -> float:
         return 0.0
 
 
+def _driftlog_samples(path: Path) -> list[tuple[datetime, float]]:
+    """Lee el sidecar .driftlog de un bloque (ver drift_sampler en
+    radio_recorder.py): pares (hora real, duración real del archivo en ese
+    momento), muestreados cada ~10s mientras se graba. Lista vacía si no
+    existe (bloque viejo ya archivado al NAS, o de antes de este cambio)."""
+    driftlog = path.with_suffix(".driftlog")
+    samples = []
+    try:
+        for line in driftlog.read_text(encoding="utf-8").splitlines():
+            ts_str, dur_str = line.rsplit(",", 1)
+            samples.append((datetime.fromisoformat(ts_str), float(dur_str)))
+    except (OSError, ValueError):
+        return []
+    samples.sort(key=lambda s: s[0])
+    return samples
+
+
+def _real_offset(path: Path, dt: datetime, moment: datetime) -> float:
+    """Segundo real dentro de `path` que corresponde a `moment` -- usa el
+    .driftlog si existe en vez de asumir que "segundo N del archivo" ==
+    "segundo N transcurridos desde que inició el bloque". Las reconexiones
+    de ffmpeg (-reconnect) no rellenan con silencio el tiempo perdido de la
+    fuente, así que un bloque de 30 min puede tener bastante menos audio
+    real del que el reloj indica (medido: 41s de menos en un bloque real de
+    LOS40 GDL, 2026-08-26) -- sin esto, un clip puede caer en un momento
+    completamente distinto al que dice el timestamp. Sin .driftlog, cae al
+    cálculo lineal simple de siempre."""
+    nominal = (moment - dt).total_seconds()
+    samples = _driftlog_samples(path)
+    if not samples:
+        return nominal
+    if moment <= samples[0][0]:
+        # Antes de la primera muestra -- casi no puede haber drift
+        # acumulado todavía (la primera muestra llega a los pocos segundos
+        # de iniciado el bloque).
+        return min(nominal, samples[0][1])
+    if moment >= samples[-1][0]:
+        # Después de la última muestra -- se asume sin drift adicional
+        # desde entonces (a lo más falta cubrir DRIFT_SAMPLE_SEC de margen).
+        return samples[-1][1] + (moment - samples[-1][0]).total_seconds()
+    for (t0, d0), (t1, d1) in zip(samples, samples[1:]):
+        if t0 <= moment <= t1:
+            span = (t1 - t0).total_seconds()
+            if span <= 0:
+                return d0
+            frac = (moment - t0).total_seconds() / span
+            return d0 + (d1 - d0) * frac
+    return nominal  # inalcanzable si samples no está vacío, pero por si acaso
+
+
 def _segment_at(segs: list[tuple[datetime, Path]], moment: datetime):
     candidate = None
     for dt, path in segs:
@@ -111,7 +161,7 @@ def locate_segment(station_num: int, moment: datetime):
     if not found:
         return None
     dt, path, _ = found
-    return path, (moment - dt).total_seconds()
+    return path, _real_offset(path, dt, moment)
 
 
 def _clip_window(station_num: int, moment: datetime, before: float, after: float):
@@ -137,11 +187,14 @@ def _clip_window(station_num: int, moment: datetime, before: float, after: float
         dt, path, dur = found
         seg_end = dt + timedelta(seconds=dur) if dur else win_end
         piece_end = min(win_end, seg_end)
-        length = (piece_end - cur).total_seconds()
+        if piece_end <= cur:
+            break
+        offset     = max(0.0, _real_offset(path, dt, cur))
+        end_offset = max(offset, _real_offset(path, dt, piece_end))
+        length = end_offset - offset
         if length <= 0:
             break
-        offset = (cur - dt).total_seconds()
-        pieces.append((path, max(0.0, offset), length))
+        pieces.append((path, offset, length))
         cur = piece_end
     return pieces
 

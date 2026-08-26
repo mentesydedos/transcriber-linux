@@ -74,6 +74,7 @@ def main():
                 key = f"{folder.name}/{src.name}"
                 if key in done:
                     src.unlink(missing_ok=True)  # ya se había subido antes; solo faltaba borrar
+                    src.with_suffix(".driftlog").unlink(missing_ok=True)
                     continue
                 dest = _dest_for(src)
                 if dest is None:
@@ -90,6 +91,11 @@ def main():
                 state_fh.write(key + "\n")
                 state_fh.flush()
                 src.unlink(missing_ok=True)
+                # El sidecar .driftlog (ver radio_recorder.py) no se sube al
+                # NAS -- solo sirve para ubicar clips de audio con precisión
+                # mientras el bloque está local/reciente. Para bloques viejos
+                # ya archivados, audio_clips.py cae al cálculo lineal simple.
+                src.with_suffix(".driftlog").unlink(missing_ok=True)
                 copied += 1
 
     print(f"Respaldados {copied} bloques nuevos al NAS (y borrados localmente).")

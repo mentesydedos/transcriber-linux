@@ -256,14 +256,18 @@ def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] 
 def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                               date_from: str | None = None, date_to: str | None = None) -> int:
     """Busca videos nuevos en YouTube por cada keyword (YouTube Data API v3),
-    descarga y transcribe el audio de cada video NUEVO (CPU, ver
-    alerts/youtube.py) y guarda como matches los segmentos de 30s donde
+    obtiene la transcripción de cada video NUEVO -- primero intenta los
+    captions nativos de YouTube (rápido, sin CPU); si el video no tiene en
+    español, cae a descargar el audio y transcribirlo localmente (CPU, ver
+    alerts/youtube.py) -- y guarda como matches los segmentos de 30s donde
     aparece alguna keyword de la búsqueda (channel_id=YOUTUBE_CHANNEL_ID,
     channel_name=título del video, source_url=link con &t=<segundo> al
-    momento exacto). tabla youtube_processed evita volver a descargar/
-    transcribir un video ya visto, aunque esa vez no haya dado match --
-    la transcripción es cara (CPU) y no cambia entre ciclos."""
-    from alerts.youtube import search_videos, download_audio, transcribe_video, _api_key
+    momento exacto). Si el video dura <= YOUTUBE_FULL_TRANSCRIPT_MAX_SEC
+    (ver alerts/youtube.py), también guarda la transcripción COMPLETA en
+    youtube_transcripts, no solo el fragmento con la palabra clave. tabla
+    youtube_processed evita reprocesar un video ya visto, aunque esa vez no
+    haya dado match -- la transcripción es cara y no cambia entre ciclos."""
+    from alerts.youtube import search_videos, get_transcript, detect_language, FULL_TRANSCRIPT_MAX_SEC, _api_key
     api_key = _api_key(adb)
     if not api_key:
         return 0
@@ -280,47 +284,94 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
                                 (vid['video_id'],)).fetchone()
             if seen:
                 continue
-            wav = download_audio(vid['video_id'], tmp_root)
-            if not wav:
+            try:
+                result = get_transcript(vid['video_id'], tmp_root, logger)
+            except Exception as e:
+                logger.error(f"[YouTube] transcripción de {vid['video_id']} falló: {e}")
+                result = None
+            if result is None:
                 adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
                             (vid['video_id'],))
                 adb.commit()
                 continue
-            try:
-                segments = transcribe_video(wav, logger)
-            except Exception as e:
-                logger.error(f"[YouTube] transcripción de {vid['video_id']} falló: {e}")
-                segments = []
-            finally:
-                wav.unlink(missing_ok=True)
+            segments = result['segments']
+
+            # Filtro de idioma -- a pedido explícito, solo interesan
+            # español e inglés. La metadata de YouTube (duración/título) no
+            # siempre delata el idioma hablado, así que se detecta sobre una
+            # muestra de la transcripción ya obtenida (primeros ~5 min,
+            # suficiente para una detección confiable sin gastar en el resto
+            # de videos largos). Si no se pudo determinar, se conserva --
+            # mejor un falso positivo ocasional que perder contenido real
+            # por una detección ambigua.
+            sample = ' '.join(t for _, t in segments[:10]).strip()
+            lang = detect_language(sample) if sample else None
+            if lang is not None and lang not in {'es', 'en'}:
+                adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
+                            (vid['video_id'],))
+                adb.commit()
+                continue
+
+            if result['duration'] is not None and result['duration'] <= FULL_TRANSCRIPT_MAX_SEC:
+                full_text = ' '.join(t for _, t in result['raw_segments'])
+                adb.execute("""INSERT OR REPLACE INTO youtube_transcripts
+                    (video_id, title, channel, published, url, source, duration_sec, full_text, segments)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (vid['video_id'], vid['title'], vid.get('channel'), vid['published'], vid['url'],
+                     result['source'], result['duration'], full_text, json.dumps(result['raw_segments'])))
 
             try:
-                published = datetime.fromisoformat(vid['published'].replace('Z', '+00:00'))
+                # La API de YouTube entrega publishedAt en UTC -- .astimezone()
+                # sin argumento lo convierte a la hora local del sistema
+                # (America/Mexico_City), igual que datetime.now() en el resto
+                # del código. Sin esto, cada match de YouTube quedaba con el
+                # timestamp adelantado por el offset UTC completo (6h aquí).
+                published = datetime.fromisoformat(vid['published'].replace('Z', '+00:00')).astimezone()
             except ValueError:
                 published = datetime.now()
             dedup_on = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
+
+            # Primero se recorre TODO el video contando, por palabra clave,
+            # cuántos segmentos de 30s la mencionan y en cuál apareció
+            # primero -- así, si luego se colapsa a una sola fila por video
+            # (dedup_on), esa fila puede mostrar "detectada N veces" en vez
+            # de perder esa información (antes se dejaba de revisar el
+            # resto del video en cuanto aparecía la primera mención).
+            kw_occurrences: dict[str, int] = {}
+            first_seg: dict[str, tuple[float, str]] = {}
             for offset, text in segments:
                 if _excluded(text, exclude_words, bool(s['phonetic']), bool(s['whole_word'])):
                     continue
-                # Igual que TV/radio (ver _process): con dedup_on, varias
-                # keywords que matchean el MISMO segmento de 30s cuentan
-                # como una sola coincidencia, no una por keyword.
-                matching_kws = [kw2 for kw2 in keywords
-                                 if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word']))]
-                if dedup_on:
-                    matching_kws = matching_kws[:1]
-                for kw2 in matching_kws:
-                    # offset como segundos agregados -- cada segmento del mismo
-                    # video necesita un timestamp distinto para no chocar
-                    # contra el índice único (search_id, keyword, channel_id,
-                    # timestamp) y perder coincidencias reales.
-                    seg_ts = (published + timedelta(seconds=offset)).strftime('%Y-%m-%d %H:%M:%S')
-                    cur = adb.execute("""INSERT OR IGNORE INTO matches
-                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url)
-                        VALUES (?,?,?,?,?,?,?)""",
-                        (s['id'], kw2, YOUTUBE_CHANNEL_ID, vid['title'], seg_ts, text,
-                         f"{vid['url']}&t={int(offset)}s"))
-                    total += cur.rowcount
+                for kw2 in keywords:
+                    if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word'])):
+                        kw_occurrences[kw2] = kw_occurrences.get(kw2, 0) + 1
+                        first_seg.setdefault(kw2, (offset, text))
+
+            if dedup_on and first_seg:
+                # Un video es contenido fijo, no un canal en vivo -- a
+                # diferencia de TV/radio (donde el mismo tema puede
+                # legítimamente repetirse horas después), aquí varias
+                # menciones dentro del mismo video son la MISMA mención
+                # repetida, no varias distintas. Una sola fila para todo el
+                # video: la palabra que apareció primero cronológicamente.
+                kw2 = min(first_seg, key=lambda k: first_seg[k][0])
+                to_insert = [(kw2, *first_seg[kw2], kw_occurrences[kw2])]
+            else:
+                to_insert = [(kw2, *first_seg[kw2], kw_occurrences[kw2]) for kw2 in first_seg]
+
+            for kw2, offset, text, cnt in to_insert:
+                # offset como segundos agregados -- cada segmento del mismo
+                # video necesita un timestamp distinto para no chocar
+                # contra el índice único (search_id, keyword, channel_id,
+                # timestamp) y perder coincidencias reales.
+                seg_ts = (published + timedelta(seconds=offset)).strftime('%Y-%m-%d %H:%M:%S')
+                cur = adb.execute("""INSERT OR IGNORE INTO matches
+                    (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, occurrence_count)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (s['id'], kw2, YOUTUBE_CHANNEL_ID, vid['title'], seg_ts, text,
+                     f"{vid['url']}&t={int(offset)}s", cnt))
+                total += cur.rowcount
+
             adb.execute("INSERT OR IGNORE INTO youtube_processed (video_id) VALUES (?)",
                         (vid['video_id'],))
             adb.commit()

@@ -373,6 +373,24 @@ CREATE TABLE IF NOT EXISTS youtube_processed (
     video_id     TEXT PRIMARY KEY,
     processed_at TEXT DEFAULT (datetime('now','localtime'))
 );
+-- Transcripción COMPLETA de un video (no solo el fragmento con la palabra
+-- clave) para videos de hasta YOUTUBE_FULL_TRANSCRIPT_MAX_SEC (ver
+-- alerts/youtube.py) -- separada de `transcriptions` (TV/radio) porque ahí
+-- un "canal" es un flujo continuo con su propia línea de tiempo; cada
+-- video de YouTube es una pieza aislada, mezclarlos bajo un solo
+-- channel_id compartido no tendría sentido para navegar por fecha/hora.
+CREATE TABLE IF NOT EXISTS youtube_transcripts (
+    video_id     TEXT PRIMARY KEY,
+    title        TEXT,
+    channel      TEXT,
+    published    TEXT,
+    url          TEXT,
+    source       TEXT,   -- 'captions' (nativo de YouTube) o 'asr' (transcrito localmente)
+    duration_sec INTEGER,
+    full_text    TEXT,
+    segments     TEXT,   -- JSON [[segundo_inicio, texto], ...]
+    fetched_at   TEXT DEFAULT (datetime('now','localtime'))
+);
 CREATE INDEX IF NOT EXISTS idx_m_search ON matches(search_id);
 CREATE INDEX IF NOT EXISTS idx_m_found  ON matches(found_at);
 CREATE INDEX IF NOT EXISTS idx_s_user   ON searches(user_id);
@@ -458,6 +476,18 @@ def _init_db():
         # channel_name/timestamp/etc. con el mismo criterio, y así no hace
         # falta ir a transcriptions.db (otra base) para mostrar el ícono.
         conn.execute("ALTER TABLE matches ADD COLUMN has_music INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        # Cuántas veces se detectó esa palabra en TODO el contenido que
+        # representa esta fila -- por ahora solo lo llena YouTube (watcher.py):
+        # un video se colapsa a una sola coincidencia (ver el fix de
+        # duplicados por video), y esto conserva cuántas veces en realidad
+        # apareció la palabra en el video completo, no solo en el fragmento
+        # mostrado. Default 1 -- una fila siempre representa al menos una
+        # detección real.
+        conn.execute("ALTER TABLE matches ADD COLUMN occurrence_count INTEGER DEFAULT 1")
         conn.commit()
     except Exception:
         pass
@@ -941,11 +971,14 @@ def create_app() -> Flask:
             ORDER BY e.title
             LIMIT 200
         """, (sid,)).fetchall()
+        # Mismo WHERE que la tabla de resultados -- antes estas dos usaban solo
+        # search_id=?, así que "palabras" y "canales" seguían mostrando el
+        # desglose de TODA la búsqueda aunque el usuario ya hubiera filtrado.
         kw_stats = d.execute(
-            "SELECT keyword, COUNT(*) cnt FROM matches WHERE search_id=? GROUP BY keyword ORDER BY cnt DESC", (sid,)
+            f"SELECT keyword, COUNT(*) cnt FROM matches WHERE {where} GROUP BY keyword ORDER BY cnt DESC", params
         ).fetchall()
         ch_stats = d.execute(
-            "SELECT channel_name, COUNT(*) cnt FROM matches WHERE search_id=? GROUP BY channel_name ORDER BY cnt DESC", (sid,)
+            f"SELECT channel_name, COUNT(*) cnt FROM matches WHERE {where} GROUP BY channel_name ORDER BY cnt DESC", params
         ).fetchall()
 
         # Heatmap: una fila por fecha real (date_start … hoy o date_end)
@@ -961,13 +994,15 @@ def create_app() -> Flask:
         n_days = len(hm_dates_list)
         date_idx = {dt: i for i, dt in enumerate(hm_dates_list)}
 
-        hm_rows = d.execute("""
+        # Mismo WHERE filtrado que arriba -- el mapa de calor mostraba
+        # actividad de TODA la búsqueda incluso con filtros activos.
+        hm_rows = d.execute(f"""
             SELECT date(timestamp) as day,
                    CAST(strftime('%H', timestamp) AS INTEGER) as hr,
                    COUNT(*) as cnt
-            FROM matches WHERE search_id=?
+            FROM matches WHERE {where}
             GROUP BY day, hr
-        """, (sid,)).fetchall()
+        """, params).fetchall()
         heatmap = [[0] * 24 for _ in range(n_days)]
         for r in hm_rows:
             idx = date_idx.get(r['day'])
@@ -1003,6 +1038,43 @@ def create_app() -> Flask:
             heatmap=heatmap, hm_max=hm_max, hm_dates=hm_dates_list,
             prog_map=prog_map,
             live_eligible=live_eligible,
+        )
+
+    @app.route('/searches/<int:sid>/network')
+    @login_required
+    def search_network(sid):
+        """Dashboard de comportamiento de medios: red de eco entre canales
+        (quién origina un tema y quién lo repite después), flujo palabra
+        clave -> medio -> canal (Sankey) y pulso temporal por tipo de medio.
+        Respeta los mismos filtros activos en la vista de coincidencias."""
+        s = _get_search(sid)
+        if not s:
+            flash('Búsqueda no encontrada.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        kfs       = request.args.getlist('kw')
+        cfs       = request.args.getlist('ch')
+        pfs       = request.args.getlist('prog')
+        mfs       = request.args.getlist('mt')
+        date_from = request.args.get('date_from', '')
+        date_to   = request.args.get('date_to', '')
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+
+        d = db()
+        rows = d.execute(
+            f"SELECT channel_id, channel_name, keyword, timestamp FROM matches WHERE {where}", params
+        ).fetchall()
+
+        from alerts.media_network import build_echo_network, build_sankey, build_stream_timeline
+        network  = build_echo_network(rows)
+        sankey   = build_sankey(rows)
+        timeline = build_stream_timeline(rows)
+
+        return render_template('search_network.html',
+            s=s, total=len(rows),
+            network=network, sankey=sankey, timeline=timeline,
+            kfs=kfs, cfs=cfs, pfs=pfs, mfs=mfs, date_from=date_from, date_to=date_to,
+            has_filters=bool(kfs or cfs or pfs or mfs or date_from or date_to),
         )
 
     @app.route('/searches/<int:sid>/similarities')

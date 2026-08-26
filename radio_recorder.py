@@ -23,6 +23,7 @@ import signal
 import logging
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from alerts.radiowall import list_radio_stations
@@ -32,6 +33,15 @@ SEGMENT_SEC    = int(os.environ.get("TRANSCRIBER_RADIO_SEGMENT_SEC", "1800"))
 AUDIO_BITRATE  = os.environ.get("TRANSCRIBER_RADIO_ABITRATE", "96k")
 RESTART_DELAY  = 5
 STATUS_EVERY   = 60
+
+# Cada cuántos segundos se muestrea la duración REAL del bloque en curso
+# (ver drift_sampler) -- los reconexiones de ffmpeg (-reconnect) no rellenan
+# con silencio el tiempo perdido, así que un bloque de 30 min puede tener
+# menos audio real del que el reloj indica. audio_clips.py usa estas
+# muestras para ubicar un momento dentro del archivo sin asumir que
+# "segundo N del archivo" == "segundo N del bloque real" -- ver el bug real
+# encontrado 2026-08-26 (LOS40 GDL, bloque de 30 min con 41s de menos).
+DRIFT_SAMPLE_SEC = int(os.environ.get("TRANSCRIBER_RADIO_DRIFT_SAMPLE_SEC", "20"))
 
 # Misma ventana nocturna que video_recorder.py (00:00-05:30 hora local).
 PAUSE_START_H  = int(os.environ.get("TRANSCRIBER_RADIO_PAUSE_START_H", "0"))
@@ -104,6 +114,65 @@ def pause_scheduler():
 
 def _safe_name(name: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in name)
+
+
+def _ffprobe_duration(path: Path) -> float:
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _current_block_path(num: int, safe: str) -> Path | None:
+    """El archivo que ffmpeg está escribiendo AHORA -- no se puede asumir
+    que siempre arranca alineado a :00/:30 (segment_atclocktime), porque
+    cuando el proceso ffmpeg de una estación se reinicia (falla de conexión,
+    ver station_recorder) arranca un bloque nuevo con nombre "irregular" en
+    ese momento. Se usa el .aac con el mtime más reciente de la carpeta en
+    vez de calcular el nombre esperado -- así siempre apunta al archivo que
+    de verdad está creciendo."""
+    folder = AUDIO_DIR / f"canal_{num:02d}_{safe}"
+    try:
+        files = list(folder.glob("*.aac"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
+def drift_sampler(num: int, name: str):
+    """Cada DRIFT_SAMPLE_SEC, mide con ffprobe cuánto audio real lleva el
+    bloque que se está grabando en este momento y lo anota (hora real,
+    duración real) en un sidecar .driftlog junto al .aac -- ver comentario
+    en DRIFT_SAMPLE_SEC arriba. No modifica la grabación en sí, solo la
+    observa; si esto falla no afecta la grabación."""
+    safe = _safe_name(name)
+    while not stop_event.is_set():
+        if stop_event.wait(DRIFT_SAMPLE_SEC):
+            break
+        if _in_pause_window():
+            continue
+        with active_lock:
+            recording = num in active_procs
+        if not recording:
+            continue
+        aac_path = _current_block_path(num, safe)
+        if aac_path is None or not aac_path.exists():
+            continue
+        dur = _ffprobe_duration(aac_path)
+        if dur <= 0:
+            continue
+        try:
+            with open(aac_path.with_suffix(".driftlog"), "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()},{dur:.3f}\n")
+        except OSError:
+            pass
 
 
 def station_recorder(num: int, name: str, url: str, headers: str | None):
@@ -198,6 +267,9 @@ def main():
                               name=f"rec-{s['num']:02d}", daemon=True)
         t.start()
         threads.append(t)
+        d = threading.Thread(target=drift_sampler, args=(s["num"], s["name"]),
+                              name=f"drift-{s['num']:02d}", daemon=True)
+        d.start()
         time.sleep(1)  # escalonar arranques
 
     st = threading.Thread(target=status_thread, args=(stations, threads), daemon=True)
