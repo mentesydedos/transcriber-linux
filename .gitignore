@@ -33,6 +33,12 @@ alerts/cache/
 # Descargas parciales de YouTube en curso
 tmp_youtube/
 
+# Prototipos de refuerzo de vocabulario (ver proto_boosting/) -- se
+# conservan los scripts (documentan cómo se validó la función real), pero
+# no los audios de prueba (clips extraídos de grabaciones reales) ni logs.
+proto_boosting/*.wav
+proto_boosting/*.log
+
 # Logs
 logs/
 

@@ -1,0 +1,4 @@
+# Palabras/frases a reforzar en la transcripción de TV (CTC-ES).
+# Una por línea. Líneas que empiezan con # se ignoran.
+# Requiere reiniciar transcriber-ctc-es.service para que un cambio aquí tome efecto.
+Sheinbaum

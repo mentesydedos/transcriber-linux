@@ -32,6 +32,7 @@ from pathlib import Path
 # primer intento la importaba directo en este venv (venv-parakeet, que sí
 # tiene onnxruntime-gpu) y causó el OOM de CUDA de radio ese mismo día.
 import music_classifier_client
+import text_corrections
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_NAME        = os.environ.get("TRANSCRIBER_PARAKEET_MODEL", "nvidia/parakeet-tdt-0.6b-v3")
@@ -327,6 +328,19 @@ def run(audio_queue, model_name: str = None, device: str = "cuda",
             logger.error(f"[{cid:02d}] Error en inferencia: {e}", exc_info=True)
             continue
         elapsed = time.time() - t0
+
+        # Diccionario de corrección post-transcripción (ver
+        # text_corrections.py) -- errores consistentes y conocidos (nombres
+        # de estación, nombres propios) que el modelo repite siempre igual.
+        # Se probó un refuerzo de vocabulario más profundo (ver
+        # proto_boosting/) pero resultó inestable para este motor -- sin
+        # efecto en un rango amplio de valores y alucinando frases enteras
+        # en uno más alto. Esta corrección textual es más simple y segura:
+        # si falla, deja el texto tal cual (nunca frena la transcripción).
+        try:
+            text = text_corrections.apply_corrections(text)
+        except Exception:
+            pass
 
         # Actualizar el contexto del canal: últimos CONTEXT_SEC s terminando aquí
         if ctx_samples > 0:

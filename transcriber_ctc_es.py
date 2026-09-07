@@ -53,6 +53,7 @@ from pathlib import Path
 # tarda, el cliente falla en silencio (has_music=False) -- nunca frena la
 # transcripción en vivo.
 import music_classifier_client
+import ctc_es_boosting
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_DIR         = Path(os.environ.get("TRANSCRIBER_CTC_ES_MODEL_DIR", "./models/parakeet-ctc-es"))
@@ -283,7 +284,14 @@ def transcribe_chunk(preprocessor, session, vocab, blank_id, audio: np.ndarray) 
         "audio_signal": feats.numpy().astype(np.float32),
         "length": feat_len.numpy().astype(np.int64),
     })
-    text = _ctc_greedy_decode(out[0][0], vocab, blank_id)
+    logprobs = out[0][0]
+    text = _ctc_greedy_decode(logprobs, vocab, blank_id)
+    if text:
+        # Refuerzo de vocabulario (ver ctc_es_boosting.py) -- corrige
+        # nombres propios/siglas conocidos cuando hay evidencia acústica
+        # fuerte en el audio. Nunca rompe la transcripción: cualquier fallo
+        # devuelve el texto tal cual (ver boost_text).
+        text = ctc_es_boosting.boost_text(logprobs, text, blank_id)
     return "" if _is_silent_or_noise(text) else text
 
 # ── Loop principal (misma firma que transcriber_parakeet.run / transcriber_cohere.run) ─
@@ -299,6 +307,11 @@ def run(audio_queue, model_name: str = None, device: str = "cpu",
 
     logger.info("Cargando parakeet-ctc-es (ONNX)...")
     preprocessor, session, vocab, blank_id = _load_model(logger, device=device)
+
+    # Refuerzo de vocabulario (ver ctc_es_boosting.py) -- se construye UNA
+    # vez aquí, no en cada chunk. Si la lista está vacía o algo falla, se
+    # desactiva solo y el resto sigue igual que antes (greedy decode puro).
+    ctc_es_boosting.init_boosting(vocab, blank_id)
 
     logger.info("Pre-calentando el modelo...")
     try:

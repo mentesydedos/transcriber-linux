@@ -391,6 +391,17 @@ CREATE TABLE IF NOT EXISTS youtube_transcripts (
     segments     TEXT,   -- JSON [[segundo_inicio, texto], ...]
     fetched_at   TEXT DEFAULT (datetime('now','localtime'))
 );
+-- Diccionario de corrección post-transcripción (ver text_corrections.py)
+-- -- errores CONSISTENTES y conocidos (nombres propios, siglas, nombres de
+-- estación) que el motor repite siempre igual. pattern se busca como
+-- palabra completa, sin distinguir mayúsculas/acentos en la búsqueda
+-- (aunque sí en el reemplazo, para poder fijar la capitalización correcta).
+CREATE TABLE IF NOT EXISTS text_corrections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern     TEXT NOT NULL,
+    replacement TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now','localtime'))
+);
 CREATE INDEX IF NOT EXISTS idx_m_search ON matches(search_id);
 CREATE INDEX IF NOT EXISTS idx_m_found  ON matches(found_at);
 CREATE INDEX IF NOT EXISTS idx_s_user   ON searches(user_id);
