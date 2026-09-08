@@ -1,0 +1,26 @@
+[Unit]
+Description=AlertaTV - Arranque escalonado y verificado de todos los servicios
+# Espera a que la red y el sistema de discos/NAS estén listos antes de
+# empezar -- arrancar antes de eso solo causaria fallas de conexion que la
+# propia verificacion del script ya detecta y reporta, sin necesidad de
+# adivinar aqui cuando "ya" esta listo.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Sin User= -- corre como root. Es systemd quien lo arranca en el boot (no
+# una sesion interactiva), asi que no hace falta sudo: el propio proceso ya
+# tiene permiso de controlar los demas servicios via systemctl. No se tocó
+# /etc/sudoers para nada de esto.
+WorkingDirectory=/home/transcriber/transcriber-linux
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python3 /home/transcriber/transcriber-linux/startup_sequence.py
+StandardOutput=journal
+StandardError=journal
+# Generoso: dos motores de GPU con verificacion de hasta 90s cada uno, mas
+# el resto de los servicios -- ver ENGINE_WARMUP_SEC en startup_sequence.py.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

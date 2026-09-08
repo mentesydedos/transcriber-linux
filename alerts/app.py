@@ -882,7 +882,14 @@ def create_app() -> Flask:
                 # a la lista sin ninguna señal de que algo se estaba procesando.
                 return redirect(url_for('search_detail', sid=cur.lastrowid))
         from alerts.channel_types import MEDIA_TYPES, DEFAULT_MEDIA_TYPES
-        return render_template('search_new.html', today=date.today().isoformat(),
+        # Fecha más antigua con transcripción real (TV/radio) -- para que el
+        # calendario de "Fecha inicio" no deje elegir un día sin nada que
+        # buscar. MIN(timestamp) sin envolver en date() sí aprovecha
+        # idx_trans_timestamp (a diferencia de MIN(date(timestamp))), por
+        # eso es instantáneo aunque la tabla tenga millones de filas.
+        oldest = _connect_trans_db().execute("SELECT MIN(timestamp) FROM transcriptions").fetchone()[0]
+        min_date = oldest[:10] if oldest else date.today().isoformat()
+        return render_template('search_new.html', today=date.today().isoformat(), min_date=min_date,
                                media_types_choices=MEDIA_TYPES,
                                default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')))
 
@@ -1678,6 +1685,48 @@ def create_app() -> Flask:
         """).fetchall()
         return render_template('admin.html', users=users, searches=searches)
 
+    def _read_json_status(path):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    @app.route('/admin/startup')
+    @admin_required
+    def admin_startup():
+        """Progreso/resultado del último arranque escalonado (ver
+        startup_sequence.py, corrido por systemd al iniciar la máquina) --
+        para poder revisarlo desde el navegador en vez de solo por
+        journalctl. Si esta página misma está respondiendo, el arranque ya
+        llegó al menos hasta levantar alerts.service (uno de los últimos
+        pasos), así que un arranque roto ANTES de eso no se puede ver
+        aquí -- solo por journalctl -u alertatv-startup.service.
+
+        Muestra también la última prueba de salud manual (ver
+        system_health.py) -- son dos archivos separados a propósito: correr
+        una prueba de salud NO debe borrar el registro de cómo salió el
+        último arranque real de la máquina, son preguntas distintas ("¿cómo
+        arrancó?" vs "¿cómo está ahora mismo?")."""
+        startup_status = _read_json_status(BASE_DIR / "logs" / "startup_status.json")
+        health_status = _read_json_status(BASE_DIR / "logs" / "health_check_status.json")
+        return render_template('admin_startup.html', status=startup_status, health=health_status)
+
+    @app.route('/admin/startup/health_check', methods=['POST'])
+    @admin_required
+    def admin_startup_health_check():
+        """Corre la prueba de salud AHORA MISMO sobre lo que ya está
+        corriendo -- no inicia ni reinicia nada, solo verifica (ver
+        system_health.run_full_health_check). Tarda ~15s (espera corta
+        para confirmar que TV/radio de verdad siguen transcribiendo), así
+        que esta petición se queda esperando esa respuesta -- el botón en
+        la plantilla se deshabilita mientras tanto para no disparar dos
+        corridas encimadas."""
+        from system_health import run_full_health_check
+        run_full_health_check()
+        return redirect(url_for('admin_startup'))
+
     @app.route('/admin/health')
     @admin_required
     def admin_health():
@@ -1720,6 +1769,101 @@ def create_app() -> Flask:
             db().execute("UPDATE users SET role=? WHERE id=?", (role, uid))
             db().commit()
         return redirect(url_for('admin'))
+
+    @app.route('/admin/corrections', methods=['GET', 'POST'])
+    @admin_required
+    def admin_corrections():
+        """Diccionario de corrección post-transcripción (ver
+        text_corrections.py) -- pensado sobre todo para radio (Parakeet-TDT
+        no tiene un mecanismo de refuerzo de vocabulario seguro, ver
+        proto_boosting/). Toma efecto solo/en un minuto en los motores en
+        vivo (cache de 60s en text_corrections.py) -- no requiere
+        reiniciar ningún servicio."""
+        d = db()
+        if request.method == 'POST':
+            pattern     = request.form.get('pattern', '').strip()
+            replacement = request.form.get('replacement', '').strip()
+            if pattern and replacement:
+                d.execute("INSERT INTO text_corrections (pattern, replacement) VALUES (?,?)",
+                          (pattern, replacement))
+                d.commit()
+                # Aplica de una vez a lo YA transcrito (no solo a lo nuevo de
+                # aquí en adelante) -- a pedido explícito, para no depender
+                # de correr un script aparte cada vez que se agrega una.
+                from text_corrections import apply_to_history
+                result = apply_to_history(pattern, replacement)
+                flash(f'Corrección agregada: "{pattern}" → "{replacement}". '
+                      f'Se corrigieron {result["total"]} fragmento(s) ya transcritos.', 'success')
+            return redirect(url_for('admin_corrections'))
+        corrections = d.execute("SELECT * FROM text_corrections ORDER BY created_at DESC").fetchall()
+        return render_template('admin_corrections.html', corrections=corrections)
+
+    @app.route('/admin/corrections/reapply', methods=['POST'])
+    @admin_required
+    def admin_corrections_reapply():
+        """Reaplica TODAS las correcciones activas a lo ya transcrito --
+        útil tras corregir un error en el mecanismo mismo, o solo para
+        verificar de nuevo. Agregar una corrección nueva ya la aplica sola
+        (ver admin_corrections), esto es para el resto."""
+        from text_corrections import apply_to_history
+        result = apply_to_history()
+        flash(f'Listo: {result["total"]} fragmento(s) corregidos en total, en '
+              f'{len(result["por_correccion"])} corrección(es) revisada(s).', 'success')
+        return redirect(url_for('admin_corrections'))
+
+    @app.route('/admin/corrections/<int:cid>/delete', methods=['POST'])
+    @admin_required
+    def admin_corrections_delete(cid):
+        db().execute("DELETE FROM text_corrections WHERE id=?", (cid,))
+        db().commit()
+        return redirect(url_for('admin_corrections'))
+
+    BOOSTED_WORDS_FILE = BASE_DIR / "models" / "parakeet-ctc-es" / "boosted_words.txt"
+    BOOSTED_WORDS_HEADER = (
+        "# Palabras/frases a reforzar en la transcripción de TV (CTC-ES).\n"
+        "# Una por línea. Líneas que empiezan con # se ignoran.\n"
+        "# Requiere reiniciar transcriber-ctc-es.service para que un cambio aquí tome efecto.\n"
+    )
+
+    def _read_boosted_words() -> list[str]:
+        if not BOOSTED_WORDS_FILE.exists():
+            return []
+        return [line.strip() for line in BOOSTED_WORDS_FILE.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+
+    def _write_boosted_words(words: list[str]) -> None:
+        BOOSTED_WORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        BOOSTED_WORDS_FILE.write_text(BOOSTED_WORDS_HEADER + "\n".join(words) + ("\n" if words else ""),
+                                       encoding="utf-8")
+
+    @app.route('/admin/boosted_words', methods=['GET', 'POST'])
+    @admin_required
+    def admin_boosted_words():
+        """Lista de palabras a reforzar para TV (ver ctc_es_boosting.py) --
+        a diferencia de /admin/corrections (radio), este mecanismo SÍ
+        requiere reiniciar transcriber-ctc-es.service para tomar efecto: el
+        grafo de refuerzo se construye una sola vez al cargar el modelo, no
+        se puede recargar en caliente. Por eso no se dispara el reinicio
+        aquí mismo -- el admin decide cuándo, igual que cualquier otro
+        cambio a los motores de transcripción en vivo."""
+        if request.method == 'POST':
+            word = request.form.get('word', '').strip()
+            words = _read_boosted_words()
+            if word and word not in words:
+                words.append(word)
+                _write_boosted_words(words)
+                flash(f'"{word}" agregada. Reinicia transcriber-ctc-es.service para que tome efecto.', 'success')
+            return redirect(url_for('admin_boosted_words'))
+        return render_template('admin_boosted_words.html', words=_read_boosted_words())
+
+    @app.route('/admin/boosted_words/delete', methods=['POST'])
+    @admin_required
+    def admin_boosted_words_delete():
+        word = request.form.get('word', '')
+        words = [w for w in _read_boosted_words() if w != word]
+        _write_boosted_words(words)
+        flash(f'"{word}" eliminada. Reinicia transcriber-ctc-es.service para que tome efecto.', 'success')
+        return redirect(url_for('admin_boosted_words'))
 
     # ══════════════════════════════════════════════════════════════
     # SETTINGS (SMTP)

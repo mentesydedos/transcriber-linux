@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+{% block title %}Correcciones de transcripción — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-1">
+  <div class="d-flex align-items-center gap-2">
+    <a href="/admin" class="btn btn-sm btn-outline-secondary py-0 px-2">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    <div class="page-title" style="margin-bottom:0">Correcciones de transcripción</div>
+  </div>
+  <form method="post" action="/admin/corrections/reapply"
+        onsubmit="return confirm('¿Revisar TODO el historial otra vez con las correcciones actuales? Puede tardar unos segundos.');">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-repeat me-1"></i>Reaplicar todas al historial
+    </button>
+  </form>
+</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem;max-width:70ch">
+  Palabras que el motor de radio transcribe siempre igual y mal (nombres de estación, nombres propios) --
+  se corrigen aquí sin tocar código. Al agregar una corrección se aplica de inmediato a lo ya transcrito
+  Y a lo que se transcriba de aquí en adelante (hasta 1 minuto para lo nuevo) -- no hace falta reiniciar
+  nada ni pedirme que corra nada aparte.
+  <br>
+  Para TV existe un mecanismo distinto y más preciso (refuerzo de vocabulario, ver
+  <code>models/parakeet-ctc-es/boosted_words.txt</code>) que sí requiere reiniciar el servicio -- pide que
+  se agregue ahí si es un error de un canal de TV.
+</p>
+
+<div class="card p-4 mb-4">
+  <div class="section-label mb-3">Agregar corrección</div>
+  <form method="post" class="row g-2 align-items-end">
+    <div class="col-md-5">
+      <label class="form-label">Palabra tal como sale mal</label>
+      <input type="text" name="pattern" class="form-control" placeholder="raditeso" required>
+    </div>
+    <div class="col-md-5">
+      <label class="form-label">Cómo debería decir</label>
+      <input type="text" name="replacement" class="form-control" placeholder="radio ITESO" required>
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary w-100">
+        <i class="bi bi-plus-lg me-1"></i>Agregar
+      </button>
+    </div>
+  </form>
+  <div style="font-size:.78rem;color:var(--muted);margin-top:.6rem">
+    Se busca como palabra completa (mayúsculas y acentos no importan al buscar, sí en el reemplazo).
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold">
+      <i class="bi bi-spellcheck me-2" style="color:var(--green)"></i>Correcciones activas
+    </span>
+    <span class="section-label">{{ corrections|length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>Se busca</th>
+          <th></th>
+          <th>Se reemplaza por</th>
+          <th>Agregada</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in corrections %}
+        <tr>
+          <td class="fw-semibold" style="color:var(--red)">{{ c.pattern }}</td>
+          <td style="color:var(--muted)"><i class="bi bi-arrow-right"></i></td>
+          <td class="fw-semibold" style="color:var(--green)">{{ c.replacement }}</td>
+          <td style="color:var(--muted);font-size:.82rem">{{ c.created_at }}</td>
+          <td class="text-end">
+            <form method="post" action="/admin/corrections/{{ c.id }}/delete"
+                  onsubmit="return confirm('¿Eliminar esta corrección?');">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash3"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center py-4" style="color:var(--muted)">Sin correcciones todavía.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

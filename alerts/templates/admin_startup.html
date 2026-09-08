@@ -1,0 +1,108 @@
+{% extends 'base.html' %}
+{% block title %}Arranque del sistema — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center gap-2 mb-1">
+  <a href="/admin" class="btn btn-sm btn-outline-secondary py-0 px-2">
+    <i class="bi bi-chevron-left"></i>
+  </a>
+  <div class="page-title" style="margin-bottom:0">Arranque del sistema</div>
+</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem;max-width:70ch">
+  Dos cosas distintas: cómo salió el <strong style="color:var(--text)">último arranque</strong> de la
+  máquina (solo pasa al reiniciarla), y cómo está <strong style="color:var(--text)">ahora mismo</strong>
+  todo el sistema (puedes revisarlo cuando quieras, sin reiniciar nada).
+</p>
+
+{% macro status_card(title, data, icon) %}
+<div class="card p-4 mb-3">
+  <div class="d-flex align-items-center gap-2 mb-2">
+    {% if data.ok is none %}
+      <span class="spinner-border spinner-border-sm" style="color:var(--accent)"></span>
+      <span class="fw-semibold" style="color:var(--accent)">{{ title }} en curso…</span>
+    {% elif data.ok %}
+      <i class="bi bi-check-circle-fill" style="color:var(--green);font-size:1.3rem"></i>
+      <span class="fw-semibold" style="color:var(--green)">{{ title }}: todo bien</span>
+    {% else %}
+      <i class="bi bi-x-circle-fill" style="color:var(--red);font-size:1.3rem"></i>
+      <span class="fw-semibold" style="color:var(--red)">{{ title }}: hay problemas</span>
+    {% endif %}
+  </div>
+  <div style="font-size:.82rem;color:var(--muted)">
+    Inició: {{ data.started_at or '—' }}
+    {% if data.finished_at %} · Terminó: {{ data.finished_at }}{% endif %}
+  </div>
+</div>
+<div class="card mb-4">
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr><th></th><th>Paso</th><th>Detalle</th><th>Hora</th></tr>
+      </thead>
+      <tbody>
+        {% for s in data.steps %}
+        <tr>
+          <td>
+            {% if s.ok %}<i class="bi bi-check-circle-fill" style="color:var(--green)"></i>
+            {% else %}<i class="bi bi-x-circle-fill" style="color:var(--red)"></i>{% endif %}
+          </td>
+          <td class="fw-semibold">{{ s.name }}</td>
+          <td style="color:var(--text2);font-size:.85rem">{{ s.detail or '—' }}</td>
+          <td style="color:var(--muted);font-size:.8rem;white-space:nowrap">{{ s.at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endmacro %}
+
+<div class="section-label mb-2"><i class="bi bi-power me-1"></i>Último arranque</div>
+{% if not status %}
+<div class="card p-4 mb-4 text-center" style="color:var(--muted)">
+  No hay registro de ningún arranque todavía -- normal si <code>alertatv-startup.service</code> aún no se
+  ha instalado, o si la máquina no se ha reiniciado desde que se instaló.
+</div>
+{% else %}
+{{ status_card('Arranque', status, 'power') }}
+{% endif %}
+
+<div class="d-flex align-items-center justify-content-between mb-2 mt-4">
+  <div class="section-label" style="margin-bottom:0"><i class="bi bi-heart-pulse me-1"></i>Estado actual</div>
+  <button type="button" id="btnHealthCheck" class="btn btn-sm btn-primary">
+    <i class="bi bi-play-fill me-1"></i>Correr prueba de salud
+  </button>
+</div>
+<div id="healthCheckWait" class="card p-4 mb-4 text-center" style="display:none;color:var(--muted)">
+  <span class="spinner-border spinner-border-sm me-2" style="color:var(--accent)"></span>
+  Verificando todo el sistema (tarda unos 15 segundos, para confirmar que TV y radio de verdad siguen
+  transcribiendo, no solo que "están activos")…
+</div>
+{% if not health %}
+<div class="card p-4 mb-4 text-center" style="color:var(--muted)" id="healthCheckEmpty">
+  Sin pruebas de salud corridas todavía -- dale clic al botón de arriba.
+</div>
+{% else %}
+<div id="healthCheckResult">
+{{ status_card('Prueba de salud', health, 'heart-pulse') }}
+</div>
+{% endif %}
+
+<script>
+document.getElementById('btnHealthCheck').addEventListener('click', function () {
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verificando…';
+  document.getElementById('healthCheckWait').style.display = '';
+  const empty = document.getElementById('healthCheckEmpty');
+  if (empty) empty.style.display = 'none';
+  fetch('/admin/startup/health_check', { method: 'POST' })
+    .then(() => location.reload())
+    .catch(() => location.reload());
+});
+
+{% if status and status.ok is none %}
+setTimeout(() => location.reload(), 10000);
+{% endif %}
+</script>
+
+{% endblock %}

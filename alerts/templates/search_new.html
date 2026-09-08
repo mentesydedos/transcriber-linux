@@ -168,7 +168,8 @@
     <div class="row g-3">
       <div class="col-6">
         <label class="form-label">Fecha inicio</label>
-        <input type="date" name="date_start" class="form-control" value="{{ today }}" required>
+        <input type="date" name="date_start" class="form-control" value="{{ today }}" min="{{ min_date }}" required>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.25rem">Hay transcripciones desde el {{ min_date }}.</div>
       </div>
       <div class="col-6">
         <label class="form-label">Fecha fin</label>

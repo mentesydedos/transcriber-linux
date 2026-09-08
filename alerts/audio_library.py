@@ -14,8 +14,10 @@ está en uso).
 Estructura NAS (igual que backup_nas2_radio.py):
     NAS_ROOT/YYYY-MM-DD/YYYY-MM-DD_HH-MM_HH-MM/canal_NN_Nombre_..._HH-MM.aac
 """
+import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -71,20 +73,20 @@ _FILE_STATION_RE = re.compile(r'^canal_(\d+)_')
 _NAS_INDEX_TTL = 300  # 5 min -- las fechas del NAS solo crecen (backup_nas2_radio.py
                       # nunca borra, cleanup_nas_radio.py solo borra pasados 30 días,
                       # un cambio lento), seguro cachear un rato.
+# Mismo problema y misma solución que en alerts/library.py: alerts.service
+# corre con 8 workers de gunicorn (procesos separados) -- un cache en
+# memoria de módulo solo vive en el worker que lo llenó, así que los otros
+# 7 seguían pagando el escaneo completo del NAS (~3.6s) cada vez que una
+# petición les tocaba a ELLOS. El cache real vive en un archivo compartido;
+# la variable en memoria queda solo como espejo rápido de este worker.
+_NAS_INDEX_CACHE_FILE = BASE_DIR / "alerts" / "cache" / "nas_audio_index.json"
+_NAS_INDEX_LOCK_FILE = BASE_DIR / "alerts" / "cache" / "nas_audio_index.lock"
 _nas_index_cache: dict[int, set[str]] | None = None
 _nas_index_cache_at: float = 0.0
+_nas_index_refreshing = threading.Lock()
 
 
-def _nas_station_dates_index() -> dict[int, set[str]]:
-    """{station_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
-    de recorrer las mismas carpetas de fecha una vez POR ESTACIÓN (mismo
-    problema que tenía alerts/library.py con video -- 38 estaciones aquí,
-    así que hubiera escalado todavía peor)."""
-    global _nas_index_cache, _nas_index_cache_at
-    now = time.time()
-    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
-        return _nas_index_cache
-
+def _scan_nas_station_dates() -> dict[int, set[str]]:
     index: dict[int, set[str]] = {}
     if NAS_AUDIO_ROOT.is_dir():
         for date_dir in NAS_AUDIO_ROOT.iterdir():
@@ -97,9 +99,76 @@ def _nas_station_dates_index() -> dict[int, set[str]]:
                     m = _FILE_STATION_RE.match(f.name)
                     if m:
                         index.setdefault(int(m.group(1)), set()).add(date_dir.name)
+    return index
 
-    _nas_index_cache = index
-    _nas_index_cache_at = now
+
+def _write_index_file(index: dict[int, set[str]], at: float) -> None:
+    _NAS_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _NAS_INDEX_CACHE_FILE.with_suffix(".json.tmp")
+    payload = {"cached_at": at, "index": {str(k): sorted(v) for k, v in index.items()}}
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(_NAS_INDEX_CACHE_FILE)
+
+
+def _read_index_file() -> tuple[dict[int, set[str]], float] | None:
+    try:
+        payload = json.loads(_NAS_INDEX_CACHE_FILE.read_text())
+        index = {int(k): set(v) for k, v in payload["index"].items()}
+        return index, payload["cached_at"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _refresh_nas_index_background():
+    global _nas_index_cache, _nas_index_cache_at
+    if not _nas_index_refreshing.acquire(blocking=False):
+        return  # este worker ya está refrescando, no apilar otro hilo
+    try:
+        fd = os.open(str(_NAS_INDEX_LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        _nas_index_refreshing.release()
+        return
+    try:
+        index = _scan_nas_station_dates()
+        now = time.time()
+        _write_index_file(index, now)
+        _nas_index_cache = index
+        _nas_index_cache_at = now
+    finally:
+        _NAS_INDEX_LOCK_FILE.unlink(missing_ok=True)
+        _nas_index_refreshing.release()
+
+
+def _nas_station_dates_index() -> dict[int, set[str]]:
+    """{station_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
+    de recorrer las mismas carpetas de fecha una vez POR ESTACIÓN (mismo
+    problema que tenía alerts/library.py con video -- 38 estaciones aquí,
+    así que hubiera escalado todavía peor).
+
+    "Stale-while-revalidate", igual que en alerts/library.py: si ya hay
+    algo en cache (aunque esté vencido) se devuelve de inmediato y el
+    refresco corre en un hilo aparte -- sin esto, cualquier visita después
+    de que el cache de 5 min expirara pagaba el escaneo completo del NAS
+    por red (~3.6s medido) de forma bloqueante. Solo la primera consulta de
+    todas (cache aún None) espera al escaneo completo."""
+    global _nas_index_cache, _nas_index_cache_at
+    now = time.time()
+
+    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
+        return _nas_index_cache
+
+    from_file = _read_index_file()
+    if from_file is not None:
+        index, cached_at = from_file
+        _nas_index_cache, _nas_index_cache_at = index, cached_at
+        if now - cached_at >= _NAS_INDEX_TTL:
+            threading.Thread(target=_refresh_nas_index_background, daemon=True).start()
+        return index
+
+    index = _scan_nas_station_dates()
+    _write_index_file(index, now)
+    _nas_index_cache, _nas_index_cache_at = index, now
     return index
 
 

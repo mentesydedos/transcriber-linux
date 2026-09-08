@@ -97,9 +97,24 @@ def update_status(channel_id: int, channel_name: str, url: str, status: str):
     ts = datetime.now().isoformat(sep=" ", timespec="seconds")
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""INSERT OR REPLACE INTO channel_status
+    # INSERT OR REPLACE borra e inserta la fila entera -- cualquier columna
+    # no listada aquí (total_segments, error_count, restart_count,
+    # last_error) se reseteaba a su DEFAULT en cada llamada, y esto se
+    # llama en cada cambio de estado del canal (no solo al reiniciar el
+    # servicio, también en cada reconexión de stream) -- total_segments
+    # nunca llegaba a acumular el conteo real. El upsert de abajo actualiza
+    # solo las columnas que de verdad cambian aquí, dejando esas otras
+    # intactas (save_to_db en transcriber_ctc_es.py/transcriber_parakeet.py
+    # sigue siendo el único que las toca).
+    conn.execute("""INSERT INTO channel_status
                     (channel_id, channel_name, url, status, heartbeat, last_seen)
-                    VALUES (?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        channel_name=excluded.channel_name,
+                        url=excluded.url,
+                        status=excluded.status,
+                        heartbeat=excluded.heartbeat,
+                        last_seen=excluded.last_seen""",
                  (channel_id, channel_name, url, status, ts, ts))
     conn.commit()
     conn.close()

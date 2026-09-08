@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% block title %}Refuerzo de vocabulario (TV) — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center gap-2 mb-1">
+  <a href="/admin" class="btn btn-sm btn-outline-secondary py-0 px-2">
+    <i class="bi bi-chevron-left"></i>
+  </a>
+  <div class="page-title" style="margin-bottom:0">Refuerzo de vocabulario (TV)</div>
+</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem;max-width:70ch">
+  Para TV, el motor exige evidencia acústica real en el audio antes de corregir (no es una sustitución de
+  texto a ciegas como en radio) -- útil para nombres propios y siglas que el modelo tiende a transcribir mal
+  de varias formas distintas.
+  <br><br>
+  <span style="color:var(--amber)"><i class="bi bi-exclamation-triangle me-1"></i>Un cambio aquí NO toma
+  efecto de inmediato</span> -- el refuerzo se arma una sola vez al cargar el modelo, así que hace falta
+  reiniciar <code>transcriber-ctc-es.service</code> después de agregar o quitar una palabra.
+</p>
+
+<div class="card p-4 mb-4">
+  <div class="section-label mb-3">Agregar palabra o frase</div>
+  <form method="post" class="row g-2 align-items-end">
+    <div class="col-md-8">
+      <label class="form-label">Cómo se escribe correctamente</label>
+      <input type="text" name="word" class="form-control" placeholder="Sheinbaum" required>
+    </div>
+    <div class="col-md-4">
+      <button type="submit" class="btn btn-primary w-100">
+        <i class="bi bi-plus-lg me-1"></i>Agregar
+      </button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center py-3 px-4">
+    <span class="fw-semibold">
+      <i class="bi bi-mic me-2" style="color:var(--accent)"></i>Palabras reforzadas
+    </span>
+    <span class="section-label">{{ words|length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>Palabra / frase</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in words %}
+        <tr>
+          <td class="fw-semibold" style="color:var(--green)">{{ w }}</td>
+          <td class="text-end">
+            <form method="post" action="/admin/boosted_words/delete"
+                  onsubmit="return confirm('¿Eliminar esta palabra?');">
+              <input type="hidden" name="word" value="{{ w }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash3"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2" class="text-center py-4" style="color:var(--muted)">Sin palabras todavía.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

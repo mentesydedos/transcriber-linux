@@ -102,6 +102,18 @@
 
   function fmt(n){ return n.toLocaleString('es-MX'); }
 
+  // ETA medido en vivo, no una tasa fija -- antes asumía "2000 filas cada
+  // 5s" (el tamaño de BATCH y el intervalo del watcher en watcher.py), pero
+  // el histórico procesa TODOS los lotes seguidos sin esperar esos 5s entre
+  // cada uno (el sleep de POLL_INTERVAL solo aplica entre CICLOS del
+  // watcher, no entre lotes del mismo histórico) -- la tasa real depende
+  // de cuántas palabras tenga la búsqueda y qué tan rápido esté el CPU en
+  // ese momento, y puede ser 10x+ más rápida que esa suposición fija (caso
+  // real reportado: calculó 28 min, terminó en 2-3). Se mide la velocidad
+  // real entre esta consulta y la anterior, con suavizado (EMA) para que
+  // no brinque de más si un ciclo del watcher tardó un poco más de lo normal.
+  let lastDone = null, lastTs = null, rateEma = null;
+
   function poll(){
     fetch('/api/searches/' + sid + '/progress')
       .then(r => r.json())
@@ -117,16 +129,31 @@
         const pct = d.pct || 0;
         bar.style.width = pct + '%';
         pctEl.textContent = pct + ' %';
+        const now = Date.now();
         if(d.total > 0){
           detail.textContent = '— ' + fmt(d.done) + ' / ' + fmt(d.total) + ' registros';
           const remaining = d.total - d.done;
-          // Rough ETA: watcher processes ~2000 rows/tick (5 s)
-          if(remaining > 0 && d.done > 0){
-            const etaSec = Math.round(remaining / 2000 * 5);
+
+          if(lastDone !== null && lastTs !== null){
+            const dt = (now - lastTs) / 1000;
+            const drows = d.done - lastDone;
+            if(dt > 0 && drows > 0){
+              const sampleRate = drows / dt;  // filas/seg observadas justo ahora
+              // EMA con peso .4 a la muestra nueva -- reacciona rápido a
+              // cambios reales de velocidad sin saltar por ruido de un solo ciclo.
+              rateEma = rateEma === null ? sampleRate : (rateEma * 0.6 + sampleRate * 0.4);
+            }
+          }
+          lastDone = d.done; lastTs = now;
+
+          if(remaining > 0 && rateEma){
+            const etaSec = Math.round(remaining / rateEma);
             const etaTxt = etaSec < 60
               ? etaSec + ' s restantes'
               : Math.ceil(etaSec / 60) + ' min restantes';
             sub.textContent = etaTxt;
+          } else if (remaining > 0) {
+            sub.textContent = 'Calculando tiempo restante…';
           }
         }
         setTimeout(poll, 2000);

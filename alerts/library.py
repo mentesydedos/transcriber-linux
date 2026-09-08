@@ -29,9 +29,11 @@ Este módulo combina ambas fuentes -- local primero (más rápido, NVMe) y NAS
 como respaldo para fechas ya borradas localmente -- para que la videoteca
 muestre todo el historial disponible, no solo lo que sigue en disco local.
 """
+import json
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -112,6 +114,20 @@ def get_channel(num: int) -> dict | None:
     return None
 
 
+def overall_date_range() -> tuple[str, str] | None:
+    """(fecha más antigua, fecha más reciente) con grabación en CUALQUIER
+    canal -- para mostrar "hay datos desde X" en la portada de Videoteca,
+    antes de entrar a un canal en particular (ver _nas_channel_dates_index,
+    ya cachea el recorrido completo del NAS -- esto no agrega ningún
+    escaneo nuevo, solo reduce el índice ya calculado)."""
+    all_dates = set()
+    for dates in _nas_channel_dates_index().values():
+        all_dates |= dates
+    if not all_dates:
+        return None
+    return min(all_dates), max(all_dates)
+
+
 def _nas_path_for(filename: str) -> Path | None:
     """Reconstruye la ruta NAS de un bloque a partir de su nombre de archivo
     -- misma lógica que _dest_for() en backup_nas2.py (duplicada a propósito,
@@ -132,22 +148,22 @@ _NAS_INDEX_TTL = 300  # 5 min -- las fechas del NAS solo crecen (backup_nas2.py
                       # nunca borra), nunca desaparecen entre una consulta y
                       # la siguiente dentro de la ventana de cache, así que
                       # cachear es seguro.
+# alerts.service corre con 8 workers de gunicorn (procesos separados, no
+# hilos) -- un cache en una variable de módulo vive solo en el worker que
+# lo llenó; los otros 7 seguían viendo cache=None y pagando el escaneo
+# completo del NAS (~5s medido) cada vez que una petición les tocaba a
+# ELLOS, sin importar que otro worker ya lo hubiera hecho. Por eso el cache
+# vive en un archivo (compartido por los 8 procesos), no en memoria del
+# proceso -- _nas_index_cache en memoria queda solo como espejo rápido
+# dentro del mismo worker para no releer el archivo en cada petición.
+_NAS_INDEX_CACHE_FILE = BASE_DIR / "alerts" / "cache" / "nas_video_index.json"
+_NAS_INDEX_LOCK_FILE = BASE_DIR / "alerts" / "cache" / "nas_video_index.lock"
 _nas_index_cache: dict[int, set[str]] | None = None
 _nas_index_cache_at: float = 0.0
+_nas_index_refreshing = threading.Lock()
 
 
-def _nas_channel_dates_index() -> dict[int, set[str]]:
-    """{channel_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
-    de recorrer las mismas carpetas de fecha una vez POR CANAL -- antes
-    list_dates() escaneaba el NAS entero para un solo canal (~165ms medido
-    con 18 días de historial), y la página de canal se volvía más lenta día
-    a día conforme crecía el respaldo. Este índice se arma una vez y se
-    reusa para los 26 canales."""
-    global _nas_index_cache, _nas_index_cache_at
-    now = time.time()
-    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
-        return _nas_index_cache
-
+def _scan_nas_channel_dates() -> dict[int, set[str]]:
     index: dict[int, set[str]] = {}
     if NAS_VIDEO_ROOT.is_dir():
         for date_dir in NAS_VIDEO_ROOT.iterdir():
@@ -160,9 +176,90 @@ def _nas_channel_dates_index() -> dict[int, set[str]]:
                     m = _FILE_CHANNEL_RE.match(f.name)
                     if m:
                         index.setdefault(int(m.group(1)), set()).add(date_dir.name)
+    return index
 
-    _nas_index_cache = index
-    _nas_index_cache_at = now
+
+def _write_index_file(index: dict[int, set[str]], at: float) -> None:
+    _NAS_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _NAS_INDEX_CACHE_FILE.with_suffix(".json.tmp")
+    payload = {"cached_at": at, "index": {str(k): sorted(v) for k, v in index.items()}}
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(_NAS_INDEX_CACHE_FILE)  # rename atómico -- otro worker nunca lee un archivo a medio escribir
+
+
+def _read_index_file() -> tuple[dict[int, set[str]], float] | None:
+    try:
+        payload = json.loads(_NAS_INDEX_CACHE_FILE.read_text())
+        index = {int(k): set(v) for k, v in payload["index"].items()}
+        return index, payload["cached_at"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _refresh_nas_index_background():
+    global _nas_index_cache, _nas_index_cache_at
+    if not _nas_index_refreshing.acquire(blocking=False):
+        return  # este worker ya está refrescando, no apilar otro hilo
+    # Lock de archivo aparte (O_EXCL) -- evita que los OTROS 7 workers
+    # disparen su propio escaneo completo al mismo tiempo cuando a todos
+    # les toca una petición justo con el cache recién vencido.
+    try:
+        fd = os.open(str(_NAS_INDEX_LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        _nas_index_refreshing.release()
+        return
+    try:
+        index = _scan_nas_channel_dates()
+        now = time.time()
+        _write_index_file(index, now)
+        _nas_index_cache = index
+        _nas_index_cache_at = now
+    finally:
+        _NAS_INDEX_LOCK_FILE.unlink(missing_ok=True)
+        _nas_index_refreshing.release()
+
+
+def _nas_channel_dates_index() -> dict[int, set[str]]:
+    """{channel_num: {fechas}} para TODO el NAS en un solo recorrido, en vez
+    de recorrer las mismas carpetas de fecha una vez POR CANAL -- antes
+    list_dates() escaneaba el NAS entero para un solo canal (~165ms medido
+    con 18 días de historial), y la página de canal se volvía más lenta día
+    a día conforme crecía el respaldo. Este índice se arma una vez y se
+    reusa para los 26 canales.
+
+    "Stale-while-revalidate": si ya hay algo en cache (aunque esté vencido),
+    se devuelve de inmediato y el refresco se dispara en un hilo aparte --
+    sin esto, cualquier visita después de que el cache de 5 min expirara
+    (ej. entrar al día siguiente) pagaba el escaneo completo del NAS por
+    red (~4.5s medido) de forma bloqueante. Como las fechas del NAS solo
+    crecen, servir una copia de unos minutos de antigüedad mientras se
+    actualiza en segundo plano es seguro -- a lo más falta el bloque más
+    reciente hasta el siguiente refresco. Solo la primera consulta de
+    todas (cache aún None, ej. recién reiniciado el servicio) espera al
+    escaneo completo, porque no hay nada que servir todavía."""
+    global _nas_index_cache, _nas_index_cache_at
+    now = time.time()
+
+    # Espejo en memoria de ESTE worker -- si ya lo leyó hace poco, ni
+    # siquiera hace falta releer el archivo compartido.
+    if _nas_index_cache is not None and now - _nas_index_cache_at < _NAS_INDEX_TTL:
+        return _nas_index_cache
+
+    from_file = _read_index_file()
+    if from_file is not None:
+        index, cached_at = from_file
+        _nas_index_cache, _nas_index_cache_at = index, cached_at
+        if now - cached_at >= _NAS_INDEX_TTL:
+            threading.Thread(target=_refresh_nas_index_background, daemon=True).start()
+        return index
+
+    # Ni archivo compartido ni cache en memoria -- primera vez que CUALQUIER
+    # worker pide esto desde que se reinició el servicio. Solo aquí se
+    # bloquea a esperar el escaneo completo, porque no hay nada que servir.
+    index = _scan_nas_channel_dates()
+    _write_index_file(index, now)
+    _nas_index_cache, _nas_index_cache_at = index, now
     return index
 
 

@@ -36,10 +36,17 @@ def _tdb() -> sqlite3.Connection:
 
 
 def list_channels() -> list[dict]:
-    """Todos los canales (TV + radio) con al menos una transcripción --
-    MAX(channel_name) es una simplificación segura (el nombre es estable
-    por canal en la práctica; evita un self-join solo para el caso raro de
-    que cambiara)."""
+    """Todos los canales (TV + radio) con al menos una transcripción.
+
+    Antes hacía COUNT(*)/MAX(timestamp)/MAX(channel_name) agrupado sobre
+    TODA la tabla transcriptions -- con 7M+ filas y creciendo ~400k/día,
+    cada visita después de varios días sin entrar pagaba un escaneo cada
+    vez más largo (el cache de 180s no ayuda si solo se visita
+    esporádicamente: siempre se llega con el cache ya vencido). channel_status
+    ya trae exactamente esto (last_seen, total_segments) mantenido en cada
+    INSERT por los propios motores de transcripción (ver save_to_db en
+    transcriber_ctc_es.py/transcriber_parakeet.py) -- una tabla de ~64 filas,
+    lectura instantánea sin importar cuánto haya crecido el historial."""
     global _channels_cache, _channels_cache_at
     now = time.time()
     if _channels_cache is not None and now - _channels_cache_at < _CHANNELS_CACHE_TTL:
@@ -47,11 +54,10 @@ def list_channels() -> list[dict]:
 
     conn = _tdb()
     rows = conn.execute("""
-        SELECT channel_id, MAX(channel_name) as channel_name,
-               COUNT(*) as n, MAX(timestamp) as last_ts
-        FROM transcriptions
-        WHERE channel_id IS NOT NULL
-        GROUP BY channel_id
+        SELECT channel_id, channel_name,
+               total_segments as n, last_seen as last_ts
+        FROM channel_status
+        WHERE channel_id IS NOT NULL AND total_segments > 0
         ORDER BY channel_id
     """).fetchall()
     conn.close()
