@@ -892,7 +892,21 @@ def create_app() -> Flask:
         # eso es instantáneo aunque la tabla tenga millones de filas.
         oldest = _connect_trans_db().execute("SELECT MIN(timestamp) FROM transcriptions").fetchone()[0]
         min_date = oldest[:10] if oldest else date.today().isoformat()
+
+        # Rango de CLIPS reales de audio/video (distinto de min_date arriba,
+        # que es solo el texto transcrito -- ese nunca se borra, pero los
+        # archivos de audio/video sí se purgan del NAS por retención de
+        # disco, así que puede haber coincidencias buscables sin clip
+        # disponible para reproducir si la fecha es más vieja que esto).
+        from alerts import library, audio_library
+        video_range = library.overall_date_range()
+        audio_range = audio_library.overall_date_range()
+        starts = [r[0] for r in (video_range, audio_range) if r]
+        ends   = [r[1] for r in (video_range, audio_range) if r]
+        recording_range = (min(starts), max(ends)) if starts else None
+
         return render_template('search_new.html', today=date.today().isoformat(), min_date=min_date,
+                               recording_range=recording_range,
                                media_types_choices=MEDIA_TYPES,
                                default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')))
 

@@ -165,15 +165,26 @@
   <!-- Fechas -->
   <div class="card p-4 mb-3">
     <div class="section-label mb-3">Período de monitoreo</div>
+    <div class="alert py-2 px-3 mb-3" style="font-size:.82rem;background:#22c55e1a;border:1px solid #22c55e44;color:var(--green)">
+      <i class="bi bi-calendar-check me-1"></i>
+      Hay <strong>texto transcrito</strong> (para buscar) del <strong>{{ min_date }}</strong> a hoy.
+    </div>
+    {% if recording_range and recording_range[0] > min_date %}
+    <div class="alert py-2 px-3 mb-3" style="font-size:.82rem;background:#f59e0b1a;border:1px solid #f59e0b44;color:var(--amber)">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      Pero el <strong>clip de audio/video</strong> (para reproducir) solo está disponible del <strong>{{ recording_range[0] }}</strong>
+      en adelante -- las grabaciones más viejas ya se purgaron del disco por espacio, aunque su texto siga siendo buscable.
+      Una búsqueda con fecha de inicio anterior a esa encontrará coincidencias sin clip que reproducir.
+    </div>
+    {% endif %}
     <div class="row g-3">
       <div class="col-6">
         <label class="form-label">Fecha inicio</label>
         <input type="date" name="date_start" class="form-control" value="{{ today }}" min="{{ min_date }}" required>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:.25rem">Hay transcripciones desde el {{ min_date }}.</div>
       </div>
       <div class="col-6">
         <label class="form-label">Fecha fin</label>
-        <input type="date" name="date_end" class="form-control" value="{{ today }}" required>
+        <input type="date" name="date_end" class="form-control" value="{{ today }}" max="{{ today }}" required>
       </div>
     </div>
   </div>

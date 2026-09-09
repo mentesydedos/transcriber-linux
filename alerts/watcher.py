@@ -4,12 +4,14 @@ Corre cada POLL_INTERVAL segundos. Lee transcriptions.db, cruza contra búsqueda
 activas, guarda coincidencias y dispara correos según el modo de entrega.
 """
 import json
+import os
 import re
 import sqlite3
 import threading
 import time
 import unicodedata
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from pathlib  import Path
 
@@ -35,6 +37,30 @@ NEWS_POLL_MINUTES  = 30  # cada cuánto se vuelve a consultar Google Noticias po
 # YOUTUBE_DAILY_HOUR (hora local) para cubrir lo subido durante el día.
 YOUTUBE_DAILY_HOUR = 1  # 1am -- corre en su propio hilo (_youtube_loop) para
                         # no frenar el loop rápido de 5s con descargas/transcripciones.
+
+# El histórico de una búsqueda nueva (ver _process, sección 1) se procesaba
+# en un solo hilo -- por el GIL de Python, el emparejamiento de texto
+# (regex/fonética por fila) nunca usaba más de UN núcleo aunque la máquina
+# tenga 32, sin importar cuántos días o registros haya que revisar. Se
+# paraleliza por PROCESO (no hilo, para sí aprovechar varios núcleos de
+# verdad) partiendo el trabajo por canal -- cada canal es independiente para
+# el dedup por ventana de tiempo (_recent_match_exists, la llave incluye
+# channel_id), así que procesarlos en paralelo no rompe esa garantía,
+# siempre que CADA canal se siga procesando en orden cronológico dentro de
+# su propio worker (ver _backfill_channel).
+#
+# Este es el tope del pool COMPARTIDO entre todas las búsquedas nuevas del
+# ciclo (ver _process, sección 1) -- no un tope por búsqueda. Si solo hay
+# una búsqueda nueva, sus tareas son las únicas en la cola y de facto se
+# queda con todo el pool; si hay varias a la vez, sus tareas (una por canal)
+# se mezclan en la misma cola y se reparten solas según van terminando.
+#
+# Tope conservador, NO os.cpu_count(): esta misma máquina corre 24/7 la
+# transcripción en vivo de TV/radio (GPU + ffmpeg, ver transcriber_ctc_es.py/
+# transcriber_parakeet.py) y esos NUNCA deben quedarse sin CPU por una
+# búsqueda histórica -- más info en el incidente de OOM documentado ahí.
+# Configurable por si la carga típica de la máquina cambia.
+MAX_BACKFILL_WORKERS = int(os.environ.get("TRANSCRIBER_BACKFILL_WORKERS", "12"))
 
 
 # ── Normalización fonética española ──────────────────────────────────────────
@@ -378,6 +404,69 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
     return total
 
 
+# ── Histórico de búsquedas nuevas, en paralelo por canal ─────────────────────
+def _backfill_channel(args):
+    """Corre en un proceso worker aparte (ver ProcessPoolExecutor en
+    _process). Procesa TODO el rango de fechas de UN solo canal, en orden
+    cronológico (ORDER BY id ASC, que en transcriptions.db equivale a orden
+    de timestamp dentro de un mismo canal) -- necesario para que
+    _recent_match_exists seguya viendo, al momento de cada fila, todas las
+    coincidencias de ESE canal ya insertadas antes en el tiempo. No hace
+    falta coordinarse con los demás workers: dedup es por (search_id,
+    keyword, channel_id), así que un canal nunca depende de lo que otro
+    canal esté insertando.
+
+    Abre sus propias conexiones a las DB -- sqlite3 no se puede compartir
+    entre procesos (a diferencia de entre hilos)."""
+    (search_id, channel_id, keywords, exclude_words, phonetic, whole_word,
+     dedup_on, exclude_music, date_start, date_end) = args
+
+    tdb = _tdb()
+    adb = _adb()
+    BATCH = 2000
+    last_id  = 0
+    n_done   = 0
+    try:
+        while True:
+            hist = tdb.execute("""
+                SELECT id, channel_id, channel_name, timestamp, text, has_music
+                FROM transcriptions
+                WHERE id > ? AND channel_id = ?
+                  AND timestamp >= ? AND timestamp <= ?
+                ORDER BY id ASC
+                LIMIT ?
+            """, (last_id, channel_id, date_start + ' 00:00:00', date_end + ' 23:59:59', BATCH)).fetchall()
+            if not hist:
+                break
+            for row in hist:
+                text = row['text'] or ''
+                if text and text != '[~]' and not (exclude_music and 'has_music' in row.keys() and row['has_music']) \
+                        and not _excluded(text, exclude_words, phonetic, whole_word):
+                    matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
+                    if dedup_on:
+                        matching_kws = matching_kws[:1]
+                    for kw in matching_kws:
+                        if dedup_on and _recent_match_exists(adb, search_id, kw, channel_id, row['timestamp']):
+                            continue
+                        ctx = _with_context_chunks(tdb, channel_id, row['timestamp'], text)
+                        adb.execute("""INSERT OR IGNORE INTO matches
+                            (search_id, keyword, channel_id, channel_name, timestamp, matched_text, has_music)
+                            VALUES (?,?,?,?,?,?,?)""",
+                            (search_id, kw, channel_id, row['channel_name'], row['timestamp'], ctx,
+                             int(row['has_music']) if 'has_music' in row.keys() else 0))
+            last_id = hist[-1]['id']
+            n_done += len(hist)
+            adb.execute("UPDATE searches SET init_rows_done = init_rows_done + ? WHERE id=?",
+                        (len(hist), search_id))
+            adb.commit()
+            if len(hist) < BATCH:
+                break
+    finally:
+        tdb.close()
+        adb.close()
+    return channel_id, n_done
+
+
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 def _process(adb, tdb, smtp, cfg=None):
     today = date.today().isoformat()
@@ -394,89 +483,90 @@ def _process(adb, tdb, smtp, cfg=None):
     new_searches = adb.execute(
         "SELECT * FROM searches WHERE initialized=0"
     ).fetchall()
-    for s in new_searches:
-        keywords      = json.loads(s['keywords'])
-        exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
-        phonetic    = bool(s['phonetic'])
-        whole_word  = bool(s['whole_word'])
-        media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
-        dedup_on    = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
-        exclude_music = bool(s['exclude_music']) if 'exclude_music' in s.keys() and s['exclude_music'] is not None else True
-        BATCH   = 2000
+    if new_searches:
+        # Un solo ProcessPoolExecutor COMPARTIDO entre TODAS las búsquedas
+        # nuevas de este ciclo, no uno por búsqueda -- si varias se crearon
+        # casi al mismo tiempo, sus tareas (una por canal) quedan mezcladas
+        # en la misma cola y el pool las reparte según van terminando, así
+        # que los núcleos disponibles se reparten solos entre las búsquedas
+        # activas en vez de procesarlas una por una de principio a fin. Y si
+        # solo hay una búsqueda nueva, esa es la única con tareas en la
+        # cola, así que de facto se queda con el pool completo -- no hace
+        # falta ninguna lógica especial para "toda la potencia si está sola".
+        meta = {}       # search_id -> datos para cerrarla cuando terminen sus canales
+        all_tasks = []  # (search_id, channel_id, ...) para el pool
+        for s in new_searches:
+            keywords      = json.loads(s['keywords'])
+            exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
+            phonetic    = bool(s['phonetic'])
+            whole_word  = bool(s['whole_word'])
+            media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
+            dedup_on    = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
+            exclude_music = bool(s['exclude_music']) if 'exclude_music' in s.keys() and s['exclude_music'] is not None else True
 
-        # Contar total de registros en el rango para mostrar progreso
-        total_count = tdb.execute("""
-            SELECT COUNT(*) FROM transcriptions
-            WHERE timestamp >= ? AND timestamp <= ?
-        """, (s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59')).fetchone()[0]
-        adb.execute(
-            "UPDATE searches SET init_rows_total=?, init_rows_done=0 WHERE id=?",
-            (total_count, s['id'])
-        )
-        adb.commit()
+            total_count = tdb.execute("""
+                SELECT COUNT(*) FROM transcriptions
+                WHERE timestamp >= ? AND timestamp <= ?
+            """, (s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59')).fetchone()[0]
+            adb.execute("UPDATE searches SET init_rows_total=?, init_rows_done=0 WHERE id=?",
+                        (total_count, s['id']))
+            adb.commit()
 
-        last_hist_id = 0
-        total_hist   = 0
-        while True:
-            hist = tdb.execute("""
-                SELECT id, channel_id, channel_name, timestamp, text, has_music
-                FROM transcriptions
-                WHERE id > ?
-                  AND timestamp >= ? AND timestamp <= ?
-                ORDER BY id ASC
-                LIMIT ?
-            """, (last_hist_id,
-                  s['date_start'] + ' 00:00:00',
-                  s['date_end']   + ' 23:59:59',
-                  BATCH)).fetchall()
-            if not hist:
-                break
-            for row in hist:
-                text = row['text'] or ''
-                if not text or text == '[~]':
-                    continue
-                if channel_type(row['channel_id']) not in media_types:
-                    continue
-                if exclude_music and 'has_music' in row.keys() and row['has_music']:
-                    continue
-                if _excluded(text, exclude_words, phonetic, whole_word):
-                    continue
-                # Con "agrupar repeticiones cercanas" (dedup_on) activo, varias
-                # keywords que matchean el MISMO fragmento cuentan como una
-                # sola coincidencia -- si no, buscar "rocha" y "rocha moya" en
-                # la misma búsqueda insertaba una fila por cada una para la
-                # idéntica mención real. Sin dedup_on se preserva el detalle
-                # completo (una fila por keyword) para quien sí lo quiera ver.
-                matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
-                if dedup_on:
-                    matching_kws = matching_kws[:1]
-                for kw in matching_kws:
-                    if dedup_on and _recent_match_exists(adb, s['id'], kw, row['channel_id'], row['timestamp']):
-                        continue
-                    ctx = _with_context_chunks(tdb, row['channel_id'], row['timestamp'], text)
-                    adb.execute("""INSERT OR IGNORE INTO matches
-                        (search_id, keyword, channel_id, channel_name, timestamp, matched_text, has_music)
-                        VALUES (?,?,?,?,?,?,?)""",
-                        (s['id'], kw, row['channel_id'], row['channel_name'],
-                         row['timestamp'], ctx, int(row['has_music']) if 'has_music' in row.keys() else 0))
-            last_hist_id  = hist[-1]['id']
-            total_hist   += len(hist)
-            adb.execute(
-                "UPDATE searches SET init_rows_done=? WHERE id=?",
-                (total_hist, s['id'])
-            )
+            # Un proceso worker por canal (ver _backfill_channel arriba) --
+            # channel_type() es una función pura de channel_id, así que
+            # filtrar por media_types aquí (canal completo) reemplaza el
+            # filtro que antes se hacía fila por fila, y de paso evita leer
+            # canales irrelevantes.
+            channel_rows = tdb.execute("""
+                SELECT DISTINCT channel_id FROM transcriptions
+                WHERE timestamp >= ? AND timestamp <= ?
+            """, (s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59')).fetchall()
+            channel_ids = [r['channel_id'] for r in channel_rows if channel_type(r['channel_id']) in media_types]
+
+            meta[s['id']] = {'s': s, 'keywords': keywords, 'exclude_words': exclude_words,
+                              'media_types': media_types, 'pending': len(channel_ids), 'total_hist': 0}
+            for ch in channel_ids:
+                all_tasks.append((s['id'], ch, keywords, exclude_words, phonetic, whole_word,
+                                   dedup_on, exclude_music, s['date_start'], s['date_end']))
+
+        def _finish(sid):
+            m = meta[sid]
+            s = m['s']
+            if 'news' in m['media_types']:
+                n_news = _poll_news_for_search(adb, s, m['keywords'], m['exclude_words'],
+                                                date_from=s['date_start'], date_to=s['date_end'])
+                adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?",
+                            (now.strftime('%Y-%m-%d %H:%M:%S'), sid))
+                adb.commit()
+                logger.info(f"Búsqueda {sid} '{s['name']}': {n_news} artículos de Google Noticias "
+                            f"(histórico {s['date_start']}..{s['date_end']}).")
+            adb.execute("UPDATE searches SET initialized=1 WHERE id=?", (sid,))
             adb.commit()
-            if len(hist) < BATCH:
-                break
-        if 'news' in media_types:
-            n_news = _poll_news_for_search(adb, s, keywords, exclude_words,
-                                            date_from=s['date_start'], date_to=s['date_end'])
-            adb.execute("UPDATE searches SET news_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
-            adb.commit()
-            logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_news} artículos de Google Noticias (histórico {s['date_start']}..{s['date_end']}).")
-        adb.execute("UPDATE searches SET initialized=1 WHERE id=?", (s['id'],))
-        adb.commit()
-        logger.info(f"Búsqueda {s['id']} '{s['name']}' inicializada: {total_hist} registros históricos revisados.")
+            logger.info(f"Búsqueda {sid} '{s['name']}' inicializada: {m['total_hist']} registros históricos revisados.")
+
+        # Búsquedas nuevas sin ningún canal en su rango (nada que paralelizar,
+        # p.ej. un rango de fechas sin ninguna transcripción todavía) -- se
+        # cierran de una vez, nunca van a entrar a all_tasks/pending.
+        for sid, m in meta.items():
+            if m['pending'] == 0:
+                _finish(sid)
+
+        if all_tasks:
+            n_workers = min(len(all_tasks), MAX_BACKFILL_WORKERS)
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = {pool.submit(_backfill_channel, t): t[0] for t in all_tasks}
+                logger.info(f"Histórico: {len(all_tasks)} tareas canal/búsqueda de {len(meta)} búsqueda(s) "
+                            f"nueva(s), {n_workers} procesos en paralelo.")
+                for fut in as_completed(futures):
+                    sid = futures[fut]
+                    try:
+                        _ch, n_done = fut.result()
+                        meta[sid]['total_hist'] += n_done
+                    except Exception:
+                        logger.exception(f"Búsqueda {sid} '{meta[sid]['s']['name']}': fallo procesando histórico de un canal")
+                    meta[sid]['pending'] -= 1
+                    if meta[sid]['pending'] == 0:
+                        _finish(sid)
 
     # 1.5 Re-consultar Google Noticias para búsquedas activas ya inicializadas
     # (las nuevas ya se cubrieron arriba, en su fetch histórico inicial)

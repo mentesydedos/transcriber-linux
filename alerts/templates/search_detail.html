@@ -922,6 +922,15 @@
 }
 .btn-del-match:hover { color: #ef4444; background: rgba(239,68,68,.12); }
 .btn-del-match:disabled { opacity: .4; cursor: default; }
+
+/* Modal de snapshot/clip arrastrable (ver JS más abajo) -- sin backdrop, para
+   poder seguir viendo/leyendo la tabla de coincidencias (transcripción) al
+   mismo tiempo que se reproduce el clip, y poder moverlo si tapa la fila que
+   se quiere leer. */
+#clipModal { pointer-events: none; }
+#clipModal .modal-dialog { pointer-events: auto; }
+#clipModal .modal-content { box-shadow: 0 8px 32px rgba(0,0,0,.45); }
+#clipModal .modal-header { cursor: move; user-select: none; }
 </style>
 <script>
 // Actualiza el label del botón de cada dropdown según los checks activos
@@ -945,7 +954,14 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
 // Modal de snapshot + clip: carga perezosa, solo al hacer click en la fila.
 (function() {
   var modalEl    = document.getElementById('clipModal');
-  var modal      = new bootstrap.Modal(modalEl);
+  // backdrop:false -- sin esto, el fondo oscuro de Bootstrap tapa/oscurece
+  // toda la página (incluida la tabla de coincidencias) mientras el modal
+  // está abierto. Aquí sí se quiere poder seguir leyendo/interactuando con
+  // el resto de la página con el clip abierto -- ver también el CSS de
+  // #clipModal (pointer-events) y el arrastre por el header más abajo.
+  var modal      = new bootstrap.Modal(modalEl, { backdrop: false });
+  var dialogEl   = modalEl.querySelector('.modal-dialog');
+  var headerEl   = modalEl.querySelector('.modal-header');
   var loading    = document.getElementById('clipLoading');
   var loadingTx  = document.getElementById('clipLoadingText');
   var titleEl    = document.getElementById('clipModalTitle');
@@ -962,6 +978,60 @@ document.querySelectorAll('.fcheck').forEach(function(cb) {
     expandBtn.disabled = false;
     expandBtn.innerHTML = '<i class="bi bi-arrows-angle-expand me-1"></i>Ver grabación completa (adelantar/atrasar libremente)';
   }
+
+  // Arrastrar el cuadro tomándolo del header -- así se puede mover a un lado
+  // cuando tapa la fila de la tabla que se quiere leer mientras se reproduce
+  // el clip. Se reposiciona con left/top (no transform, que Bootstrap usa
+  // para la animación de apertura/cierre) sobre .modal-dialog, que ya queda
+  // centrado por flex la primera vez -- position:relative solo desplaza
+  // desde ahí, sin romper el centrado inicial de cada clip nuevo.
+  (function initDrag() {
+    var dragging = false, startX, startY, startLeft, startTop;
+    function dragStart(clientX, clientY) {
+      var rect = dialogEl.getBoundingClientRect();
+      dragging = true;
+      startX = clientX; startY = clientY;
+      startLeft = rect.left; startTop = rect.top;
+      dialogEl.style.position = 'fixed';
+      dialogEl.style.margin = '0';
+      dialogEl.style.left = startLeft + 'px';
+      dialogEl.style.top = startTop + 'px';
+    }
+    function dragMove(clientX, clientY) {
+      if (!dragging) return;
+      dialogEl.style.left = (startLeft + (clientX - startX)) + 'px';
+      dialogEl.style.top  = (startTop  + (clientY - startY)) + 'px';
+    }
+    function dragEnd() { dragging = false; }
+
+    headerEl.addEventListener('mousedown', function(e) {
+      if (e.target.closest('.btn-close')) return;
+      dragStart(e.clientX, e.clientY);
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function(e) { dragMove(e.clientX, e.clientY); });
+    document.addEventListener('mouseup', dragEnd);
+
+    headerEl.addEventListener('touchstart', function(e) {
+      if (e.target.closest('.btn-close')) return;
+      var t = e.touches[0];
+      dragStart(t.clientX, t.clientY);
+    }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+      if (!dragging) return;
+      var t = e.touches[0];
+      dragMove(t.clientX, t.clientY);
+    }, { passive: true });
+    document.addEventListener('touchend', dragEnd);
+
+    // Cada clip nuevo vuelve a abrir centrado, sin arrastre de la vez anterior.
+    modalEl.addEventListener('show.bs.modal', function() {
+      dialogEl.style.position = '';
+      dialogEl.style.left = '';
+      dialogEl.style.top = '';
+      dialogEl.style.margin = '';
+    });
+  })();
 
   window.openClip = function(searchId, matchId) {
     current = { searchId: searchId, matchId: matchId, kind: 'tv' };

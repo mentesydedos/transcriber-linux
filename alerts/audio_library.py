@@ -172,6 +172,21 @@ def _nas_station_dates_index() -> dict[int, set[str]]:
     return index
 
 
+def overall_date_range() -> tuple[str, str] | None:
+    """(fecha más antigua, fecha más reciente) con grabación en CUALQUIER
+    estación -- mismo criterio que library.py:overall_date_range() para
+    video, usado en /searches/new para avisar desde cuándo hay clip de
+    audio/video real disponible (distinto de desde cuándo hay TEXTO
+    transcrito, que no se borra nunca aunque el audio/video ya se haya
+    purgado del NAS por retención de disco)."""
+    all_dates = set()
+    for dates in _nas_station_dates_index().values():
+        all_dates |= dates
+    if not all_dates:
+        return None
+    return min(all_dates), max(all_dates)
+
+
 def list_dates(num: int) -> list[str]:
     """Fechas (YYYY-MM-DD) con al menos un bloque grabado, local (el bloque
     en curso) o en el NAS, más reciente primero."""
