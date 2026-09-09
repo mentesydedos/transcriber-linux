@@ -1,0 +1,68 @@
+#EXTM3U
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/universal-stereo.webp" tvg-chno="88.1",Universal 88.1 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHFO_FMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/889-noticias.webp" tvg-chno="88.9",88.9 Noticias CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHMFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/oye-897.webp" tvg-chno="89.7",Oye 89.7 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XEOYEFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/imagen-radio.webp" tvg-chno="90.5",Imagen Radio 90.5 CDMX
+https://mdstrm.com/audio/64a44d807cb6630627ab0c82/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/ibero-909.webp" tvg-chno="90.9",Ibero 90.9 CDMX
+http://noasrv.caster.fm:10182/live
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/alfa-913.webp" tvg-chno="91.3",Alfa 91.3 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHFAJ_FMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-disney.webp" tvg-chno="92.1",Radio Disney 92.1 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHFOFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/ke-buena-ciudad-de-mexico.webp" tvg-chno="92.9",La Ke Buena 92.9 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/KEBUENAAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/joya-fm.webp" tvg-chno="93.7",Joya 93.7 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XEJP_FMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/uam-radio.webp" tvg-chno="94.1",UAM Radio 94.1 CDMX
+https://stream5.mexiserver.com:1124/
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/opus-94.webp" tvg-chno="94.5",Opus 94 CDMX
+https://s2.mexside.net/8016/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/amor-fm.webp" tvg-chno="95.3",Amor 95.3 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHSHFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-ipn.webp" tvg-chno="95.7",Radio IPN 95.7 CDMX
+https://broadcast.radio.ipn.mx/RadioIPN
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-unam.webp" tvg-chno="96.1",Radio UNAM 96.1 CDMX
+https://tv.radiohosting.online:9484/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-educacion-cultura-sonora.webp" tvg-chno="96.5",Radio Educacion 96.5 CDMX
+https://s2.mexside.net/8176/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/w-radio.webp" tvg-chno="96.9",W Radio 96.9 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/WRADIOAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-la-mejor.webp" tvg-chno="97.7",La Mejor 97.7 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XERCFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/el-heraldo-radio-ciudad-de-mexico.webp" tvg-chno="98.5",Heraldo Radio 98.5 CDMX
+https://n09.radiojar.com/ce31v3yah8nwv
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/match-fm.webp" tvg-chno="99.3",Match 99.3 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHPOPFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/stereo-cien.webp" tvg-chno="100.1",Stereo Cien 100.1 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHMMFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/beat-fm.webp" tvg-chno="100.9",Beat 100.9 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHSONFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/los-40.webp" tvg-chno="101.7",LOS40 101.7 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/LOS40AAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/mvs-noticias.webp" tvg-chno="102.5",MVS Noticias 102.5 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHMVSFM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-formula.webp" tvg-chno="103.3",Radio Formula 103.3 CDMX
+https://mdstrm.com/audio/6102ce7ef33d0b0830ec3adc/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-formula.webp" tvg-chno="104.1",Radio Formula 104.1 CDMX
+https://mdstrm.com/audio/61e1dfd2658baf082814e25d/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/exa-fm.webp" tvg-chno="104.9",Exa FM 104.9 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHEXA.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-chilango.webp" tvg-chno="105.3",Chilango Radio 105.3 CDMX
+https://stream.radio.co/s938b68214/listen
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/reactor.webp" tvg-chno="105.7",Reactor 105.7 CDMX
+https://s2.mexside.net/8002/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/frecuencia-1069.webp" tvg-chno="106.9",Frecuencia 106.9 CDMX
+https://radio.streamexico.com/listen/frecuencia/radio.aac
+# NOTA: Fuentes independientes reportan que Violeta Radio salio del aire el 14-oct-2024, pero este stream responde con audio real. No se pudo confirmar por metadatos si es transmision en vivo actual o un loop viejo. Revisar antes de confiar en ella para monitoreo.
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/violeta-radio.webp" tvg-chno="106.1",Violeta Radio CDMX
+https://flujos.mazorca.org/violetaradio.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/mix-fm.webp" tvg-chno="106.5",Mix 106.5 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHDFMFMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-z.webp" tvg-chno="107.3",La Z 107.3 CDMX
+https://playerservices.streamtheworld.com/api/livestream-redirect/XEQR_FMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/horizonte.webp" tvg-chno="107.9",Horizonte 107.9 CDMX
+https://s2.mexside.net/8014/stream

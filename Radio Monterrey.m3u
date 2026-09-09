@@ -1,0 +1,62 @@
+#EXTM3U
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/fm-globo.webp" tvg-chno="88.1",FM Globo Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHJMFM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/los-40-monterrey.webp" tvg-chno="88.5",Los 40 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/LOS40_MTYAAC.aac
+#EXTINF:-1 tvg-chno="89.3",Radio Formula 89.3 Monterrey
+https://stream.radiojar.com/332kkh84xp8uv
+# NOTA: Radio UANL parecia no estar transmitiendo al momento de probarla (HTTP 401 en el proxy de origen, no error de red). URL sin validar en vivo, revisar si vuelve a fallar.
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-uanl.webp" tvg-chno="89.7",Radio UANL Monterrey
+https://cast1.asurahosting.com/proxy/univers6/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-ranchera-de-monterrey-1050-am.webp" tvg-chno="90.1",La Ranchera de Monterrey
+https://streamingcwsradio30.com/8236/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-udem.webp" tvg-chno="90.5",Radio UDEM Monterrey
+https://c3.radioboss.fm:8161/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/amor-monterrey.webp" tvg-chno="90.9",Amor 90.9 Monterrey
+https://streaming.servicioswebmx.com/8214/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/premier-917.webp" tvg-chno="91.7",Premier 91.7 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/NOVA_917.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/abc-deportes.webp" tvg-chno="92.1",ABC Deportes Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/ABC_NOTICIAS_660AM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-mejor-monterrey.webp" tvg-chno="92.5",La Mejor 92.5 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHSROFM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/rg-la-deportiva-monterrey.webp" tvg-chno="92.9",RG La Deportiva Monterrey
+http://mmradio-lb.mmlabs.mx/xergfm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/banda-fm.webp" tvg-chno="93.3",Banda 93.3 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHQQ_FMAAC.aac
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-caliente-monterrey.webp" tvg-chno="94.1",La Caliente 94.1 Monterrey
+http://mmradio-lb.mmlabs.mx/xetfm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/tec-sounds-radio.webp" tvg-chno="94.9",Tec Sounds Radio Monterrey
+https://mdstrm.com/audio/66884c4a98f03fecbe37a347/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-sabrosita-monterrey.webp" tvg-chno="95.7",La Sabrosita 95.7 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/LASABROSITA_957FM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/965-fm-dominio.webp" tvg-chno="96.5",Dominio Radio 96.5 Monterrey
+http://app.sonicpanelradio.com:8410/live
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/exa-fm-monterrey.webp" tvg-chno="97.3",Exa FM Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/XHRSMTYFM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/genesis.webp" tvg-chno="98.1",Genesis 98.1 Monterrey
+https://streamingcwsradio30.com/8238/stream
+#EXTINF:-1 tvg-chno="98.5",Radio Tierra y Libertad Monterrey
+http://shaincast.caster.fm:42539/listen.mp3?authnd9ba4125b48bb23fb31d0f7cbf0f698f
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/d99-fm.webp" tvg-chno="98.9",D99 Monterrey
+http://mmradio-lb.mmlabs.mx/xhjdfm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/el-heraldo-radio-monterrey.webp" tvg-chno="99.7",Heraldo Radio Monterrey
+https://stream.radiojar.com/951bffq8h8nwv
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/aw-1013.webp" tvg-chno="101.3",La Gran AW Monterrey
+https://mdstrm.com/audio/67378ab60639b6fb47c91763/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/opus.webp" tvg-chno="102.1",Opus 102 Monterrey
+https://s2.mexside.net/8046/stream
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/digital-1029.webp" tvg-chno="102.9",Digital 102.9 Monterrey
+https://playerservices.streamtheworld.com/api/livestream-redirect/DIGITAL_1029FM.mp3
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-ke-buena-103-7.webp" tvg-chno="103.7",La Ke Buena 103.7 Monterrey
+https://mdstrm.com/audio/672a59ef590a749f9caa0704/live.m3u8
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/ky-104-5.webp" tvg-chno="104.5",KY 104.5 Monterrey
+https://sg.centrocibernetico.com/audiorama-xhmf
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-lupe-monterrey.webp" tvg-chno="105.3",La Lupe Monterrey
+http://mmradio-lb.mmlabs.mx/xhlupefm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/hits-fm.webp" tvg-chno="106.1",Hits 106.1 Monterrey
+http://mmradio-lb.mmlabs.mx/xhitsfm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/classic-fm.webp" tvg-chno="106.9",Classic 106.9 Monterrey
+http://mmradio-lb.mmlabs.mx/xhpjfm
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/imagen-radio-monterrey.webp" tvg-chno="107.7",Imagen Radio Monterrey
+http://monterrey.radio.wnsol.com:8260/;stream.mp3

@@ -51,84 +51,84 @@ http://poncho:1234@148.201.38.136:9981/stream/channelid/1694565889?profile=audio
 http://poncho:1234@148.201.38.136:9981/stream/channelid/469756007?profile=audio-aac
 #EXTINF:-1 tvg-id="218112c17da0ec72daf4821a11fb6e18" tvg-chno="44.2",Canal 44
 http://poncho:1234@148.201.38.136:9981/stream/channelid/1091731745?profile=audio-aac
-#EXTINF:-1 tvg-chno="88.7",Arroba FM
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/at-fm-arroba-fm-guadalajara.webp" tvg-chno="88.7",Arroba FM
 https://stream.zeno.fm/es06s1g9d78uv
-#EXTINF:-1 tvg-chno="89.1",La Bestia Grupera
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-bestia-grupera-guadalajara.webp" tvg-chno="89.1",La Bestia Grupera
 https://sg.centrocibernetico.com/audiorama-xhgda
-#EXTINF:-1 tvg-chno="89.5",Radio Formula GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-formula.webp" tvg-chno="89.5",Radio Formula GDL
 https://stream.radiojar.com/bhd04xcn3p8uv
-#EXTINF:-1 tvg-chno="90.3",Match FM
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/match-fm.webp" tvg-chno="90.3",Match FM
 https://playerservices.streamtheworld.com/api/livestream-redirect/XEMIAAAC.aac
-#EXTINF:-1 tvg-chno="90.7",Senal 90
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-senal-90.webp" tvg-chno="90.7",Senal 90
 https://s2.yesstreaming.net:17042/stream
-#EXTINF:-1 tvg-chno="93.1",Amor 93.1
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/amor-guadalajara.webp" tvg-chno="93.1",Amor 93.1
 https://playerservices.streamtheworld.com/api/livestream-redirect/XHPIFM.mp3
-#EXTINF:-1 tvg-chno="94.7",KY 94.7
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/ky-947.webp" tvg-chno="94.7",KY 94.7
 https://sg.centrocibernetico.com/audiorama-xhdk
-#EXTINF:-1 tvg-chno="95.5",La Mejor GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-mejor-guadalajara.webp" tvg-chno="95.5",La Mejor GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/XHRO.mp3
-#EXTINF:-1 tvg-chno="95.9",VOX Radio Hits
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/vox-fm-guadalajara.webp" tvg-chno="95.9",VOX Radio Hits
 https://streaming.servicioswebmx.com/8272/stream
-#EXTINF:-1 tvg-chno="97.1",Ke Buena GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/ke-buena-971.webp" tvg-chno="97.1",Ke Buena GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/KEBUENA_GDLAAC.aac
-#EXTINF:-1 tvg-chno="97.9",Formula Melodica
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/formula-melodica.webp" tvg-chno="97.9",Formula Melodica
 https://s2.yesstreaming.net:9085/stream
-#EXTINF:-1 tvg-chno="98.7",FM Globo GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/fm-globo.webp" tvg-chno="98.7",FM Globo GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/XHLCFM.mp3
-#EXTINF:-1 tvg-chno="101.1",Exa FM GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/exa-fm.webp" tvg-chno="101.1",Exa FM GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/XHMA.mp3
-#EXTINF:-1 tvg-chno="101.9",La Buena Onda
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-buena-onda.webp" tvg-chno="101.9",La Buena Onda
 https://s2.yesstreaming.net:9094/stream
-#EXTINF:-1 tvg-chno="102.7",LOS40 GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/los-40-guadalajara.webp" tvg-chno="102.7",LOS40 GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/LOS40_GDLAAC.aac
 #EXTINF:-1 tvg-chno="104.3",Radio UDG
 https://stream.zeno.fm/6mm85mmh6ehvv
-#EXTINF:-1 tvg-chno="107.5",Retro FM GDL
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/vibe-fm.webp" tvg-chno="107.5",Retro FM GDL
 https://sg.centrocibernetico.com/audiorama-xhvoz
 #EXTINF:-1 tvg-chno="95.1",Radio ITESO
 https://noasrv.caster.fm:10044/live
-#EXTINF:-1 tvg-chno="93.9",Imagen Guadalajara
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/imagen-radio-guadalajara.webp" tvg-chno="93.9",Imagen Guadalajara
 https://rigdl.alphamx.net/;stream.mp3
-#EXTINF:-1 tvg-chno="99.9",La Lupe
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-lupe-guadalajara.webp" tvg-chno="99.9",La Lupe
 https://mdstrm.com/audio/6737875eb61ca2fa731a2891/icecast.audio?property=mmradio
-#EXTINF:-1 tvg-chno="89.9",Magia Digital
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/magia-digital.webp" tvg-chno="89.9",Magia Digital
 #EXTHEADER:Origin: https://magia899.mx
 https://stream.zeno.fm/zrwy79s91rhvv
-#EXTINF:-1 tvg-chno="105.9",Extasis Digital
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/extasis-digital-guadalajara.webp" tvg-chno="105.9",Extasis Digital
 #EXTHEADER:Origin: https://radioramaoccidente.com
 https://stream.zeno.fm/3dnrg7m1qa0uv
-#EXTINF:-1 tvg-chno="106.7",Maxima FM
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/maxima.webp" tvg-chno="106.7",Maxima FM
 #EXTHEADER:Origin: http://www.maxima1067.fm
 https://stream.zeno.fm/ppckgqm1qa0uv
-#EXTINF:-1 tvg-chno="103.5",La Tapatia
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-tapatia-fm.webp" tvg-chno="103.5",La Tapatia
 #EXTHEADER:Origin: https://radioramaoccidente.com
 https://stream.zeno.fm/urxmpmn1qa0uv
-#EXTINF:-1 tvg-chno="99.5",Romance FM
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/romance.webp" tvg-chno="99.5",Romance FM
 #EXTHEADER:Origin: https://romance995.com
 https://stream.zeno.fm/3avzkdt91rhvv
-#EXTINF:-1 tvg-chno="91.5",Zona Tres
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/zona-tres.webp" tvg-chno="91.5",Zona Tres
 https://stream.promomedios.com:8004/stream
-#EXTINF:-1 tvg-chno="92.3",Fiesta Mexicana
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/fiesta-mexicana.webp" tvg-chno="92.3",Fiesta Mexicana
 https://stream.promomedios.com:8002/stream
-#EXTINF:-1 tvg-chno="92.7",Radio Mujer
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-mujer.webp" tvg-chno="92.7",Radio Mujer
 https://stream.promomedios.com:8008/stream
-#EXTINF:-1 tvg-chno="105.1",Milenio Bella Musica
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/milenio-bella-musica.webp" tvg-chno="105.1",Milenio Bella Musica
 https://stream.promomedios.com:8010/stream
-#EXTINF:-1 tvg-chno="100.3",Heraldo Radio
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/el-heraldo-radio-guadalajara.webp" tvg-chno="100.3",Heraldo Radio
 https://stream.radiojar.com/21h1m4cch8nwv
-#EXTINF:-1 tvg-chno="101.5",W Radio Guadalajara
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/w-radio-guadalajara.webp" tvg-chno="101.5",W Radio Guadalajara
 https://playerservices.streamtheworld.com/api/livestream-redirect/WRADIO_GDLAAC.aac
-#EXTINF:-1 tvg-chno="102.3",La Coyotera
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/la-coyotera-radio-comunitaria-xhscdq.webp" tvg-chno="102.3",La Coyotera
 https://streaming.servicioswebmx.com:7058/stream
-#EXTINF:-1 tvg-chno="1150",Radio Metropoli
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-metropoli.webp" tvg-chno="1150",Radio Metropoli
 https://s2.yesstreaming.net:9088/stream
-#EXTINF:-1 tvg-chno="790",Radio Formula GDL AM
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-formula.webp" tvg-chno="790",Radio Formula GDL AM
 https://stream.radiojar.com/8a7k0514xp8uv
-#EXTINF:-1 tvg-chno="700",Universal Red AM 700
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/universal-guadalajara.webp" tvg-chno="700",Universal Red AM 700
 https://playerservices.streamtheworld.com/api/livestream-redirect/XEDKR_AMAAC.aac
-#EXTINF:-1 tvg-chno="1250",DK 1250
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/dk-1250.webp" tvg-chno="1250",DK 1250
 https://sp2.servidorrprivado.com:10947/
-#EXTINF:-1 tvg-chno="1340",Frecuencia Deportiva 1340
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/frecuencia-deportiva.webp" tvg-chno="1340",Frecuencia Deportiva 1340
 https://stream.zeno.fm/r1540b8e408uv
-#EXTINF:-1 tvg-chno="1310",Radio Vital
+#EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/radio-vital.webp" tvg-chno="1310",Radio Vital
 https://s2.yesstreaming.net:9097/stream
