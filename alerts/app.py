@@ -192,6 +192,9 @@ def _enrich_match(m, phonetic=False, whole_word=False):
         # snapshot de TV, que sí recorta un frame real por ffmpeg).
         m_vid = re.search(r'[?&]v=([\w-]{11})', md['source_url'])
         md['youtube_video_id'] = m_vid.group(1) if m_vid else None
+    if md['channel_kind'] == 'radio':
+        from alerts.channel_logos import get_logo
+        md['channel_logo'] = get_logo(md.get('channel_name'))
     return md
 
 def _highlight(text, keyword, phonetic=False, whole_word=False):

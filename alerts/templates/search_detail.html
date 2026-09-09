@@ -466,9 +466,15 @@
               {% endif %}
             </a>
             {% else %}
-            <button type="button" class="btn-audio-clip" title="Escuchar clip (±10s)"
-                    onclick="openAudioClip({{ s.id }}, {{ m.id }})">
+            <button type="button" class="btn-audio-clip{{ ' btn-audio-clip-logo' if m.channel_logo }}"
+                    title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, {{ m.id }})">
+              {% if m.channel_logo %}
+              <img src="{{ m.channel_logo }}" loading="lazy" alt=""
+                   onerror="this.style.display='none'; this.nextElementSibling.style.display='inline'">
+              <i class="bi bi-play-circle-fill" style="display:none"></i>
+              {% else %}
               <i class="bi bi-play-circle-fill"></i>
+              {% endif %}
             </button>
             {% endif %}
           </td>
@@ -750,6 +756,8 @@
             ? `<span class="match-occurrence-badge" title="'${esc(m.keyword)}' se detectó ${m.occurrence_count} veces en este video">×${m.occurrence_count}</span>`
             : ''
         }</a>`
+      : m.channel_logo
+      ? `<button type="button" class="btn-audio-clip btn-audio-clip-logo" title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, ${m.id})"><img src="${esc(m.channel_logo)}" loading="lazy" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline'"><i class="bi bi-play-circle-fill" style="display:none"></i></button>`
       : `<button type="button" class="btn-audio-clip" title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, ${m.id})"><i class="bi bi-play-circle-fill"></i></button>`;
     return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}" data-mid="${m.id}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
@@ -899,6 +907,13 @@
   transition: border-color .15s, color .15s, transform .15s;
 }
 .btn-audio-clip:hover { border-color: var(--green); color: var(--green); transform: scale(1.08); }
+/* Logo de la estación de radio en vez del ícono genérico de "reproducir"
+   (ver channel_logo en _enrich_match, alerts/channel_logos.py) -- mismo
+   trato visual que el favicon de noticias: fondo blanco, imagen contenida. */
+.btn-audio-clip-logo { padding: 3px; }
+.btn-audio-clip-logo img {
+  width: 100%; height: 100%; object-fit: contain; background: #fff; border-radius: 3px;
+}
 
 .btn-del-match {
   background: none; border: none; padding: .25rem; cursor: pointer;

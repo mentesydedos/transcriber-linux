@@ -81,11 +81,11 @@ https://playerservices.streamtheworld.com/api/livestream-redirect/XHMA.mp3
 https://s2.yesstreaming.net:9094/stream
 #EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/los-40-guadalajara.webp" tvg-chno="102.7",LOS40 GDL
 https://playerservices.streamtheworld.com/api/livestream-redirect/LOS40_GDLAAC.aac
-#EXTINF:-1 tvg-chno="104.3",Radio UDG
+#EXTINF:-1 tvg-logo="https://blob.udgtv.com/images/LogoRadioUdeGOriginalNegro.png" tvg-chno="104.3",Radio UDG
 https://stream.zeno.fm/6mm85mmh6ehvv
 #EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/vibe-fm.webp" tvg-chno="107.5",Retro FM GDL
 https://sg.centrocibernetico.com/audiorama-xhvoz
-#EXTINF:-1 tvg-chno="95.1",Radio ITESO
+#EXTINF:-1 tvg-logo="https://radio.iteso.mx/documents/d/radio/iteso_logo" tvg-chno="95.1",Radio ITESO
 https://noasrv.caster.fm:10044/live
 #EXTINF:-1 tvg-logo="https://cdn.radoxo.com/images/mexico/imagen-radio-guadalajara.webp" tvg-chno="93.9",Imagen Guadalajara
 https://rigdl.alphamx.net/;stream.mp3
