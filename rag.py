@@ -194,3 +194,60 @@ def ask_stream(question: str, rango: str = "24h",
 
     yield {"type": "done",
            "elapsed": (datetime.now() - t0).total_seconds()}
+
+
+# ── Resumen ejecutivo para el reporte diario (alerts/watcher.py:_daily_reports) ──
+SUMMARY_SYSTEM_PROMPT = """Eres un asistente que genera resúmenes ejecutivos breves para un reporte diario de monitoreo de medios (TV/radio) en español.
+
+Reglas:
+- Resume en 3-5 frases los temas/patrones más relevantes del día para esta búsqueda -- no listes cada coincidencia una por una, el reporte ya incluye la tabla completa.
+- Agrupa coincidencias relacionadas (mismo tema, mismo canal, mismo horario) en vez de repetir.
+- Si algo destaca (pico de menciones, canal dominante, tono evidente en el texto), señálalo.
+- No inventes información que no esté en las coincidencias dadas.
+- Responde en español, tono neutral y profesional."""
+
+# ~1 token ≈ 4 caracteres en español -- deja margen dentro de LLM_CTX=4096
+# para el system prompt + la respuesta generada (max_tokens), sin necesidad
+# de contar tokens exactamente.
+SUMMARY_CONTEXT_CHAR_BUDGET = 3000
+
+
+def summarize_matches(search_name: str, matches: list[dict], max_tokens: int = 300) -> str:
+    """Resumen ejecutivo de las coincidencias de UN día para una búsqueda
+    (ver alerts/watcher.py _daily_reports). Llamada síncrona, NO streaming
+    -- a diferencia de ask_stream (pensada para la UI de preguntas), aquí se
+    llama una vez por búsqueda 'daily' activa, una vez al día."""
+    if not matches:
+        return ""
+    lines, used, omitted = [], 0, 0
+    for m in matches:
+        ts  = str(m.get("timestamp", ""))[11:19]
+        ch  = m.get("channel_name", "—")
+        kw  = m.get("keyword", "")
+        txt = (m.get("matched_text") or "")[:200]
+        line = f"- [{ts}] {ch} · «{kw}»: {txt}"
+        if used + len(line) > SUMMARY_CONTEXT_CHAR_BUDGET:
+            omitted += 1
+            continue
+        lines.append(line)
+        used += len(line)
+    if omitted:
+        lines.append(f"(+{omitted} coincidencias adicionales no incluidas en este resumen)")
+    context = "\n".join(lines)
+    user_prompt = (
+        f"Búsqueda: {search_name}\nTotal de coincidencias hoy: {len(matches)}\n\n"
+        f"COINCIDENCIAS:\n{context}\n\nRESUMEN EJECUTIVO:"
+    )
+    try:
+        llm = get_llm()
+        resp = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+        return resp["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"(resumen no disponible: {e})"

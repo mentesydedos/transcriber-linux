@@ -161,6 +161,50 @@
         </label>
       </div>
     </div>
+
+    <div class="mt-3 pt-3" style="border-top:1px solid var(--border)">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="threshold_alert_enabled"
+               id="threshold_enabled" value="1" {{ 'checked' if s.threshold_alert_enabled }}
+               onchange="document.getElementById('threshold_fields').style.display = this.checked ? '' : 'none'">
+        <label class="form-check-label" for="threshold_enabled">
+          <i class="bi bi-graph-up-arrow me-1" style="color:var(--red)"></i>
+          Alerta de pico de menciones
+        </label>
+      </div>
+      <div id="threshold_fields" style="{{ '' if s.threshold_alert_enabled else 'display:none' }};margin-top:.6rem;padding-left:1.6rem">
+        <div class="row g-2 align-items-end">
+          <div class="col-auto">
+            <label class="form-label" style="font-size:.78rem">Avisar si se mencionan</label>
+            <input type="number" name="threshold_count" class="form-control form-control-sm"
+                   value="{{ s.threshold_count or 5 }}" min="1" style="width:80px">
+          </div>
+          <div class="col-auto" style="padding-bottom:.4rem">
+            <span style="font-size:.85rem;color:var(--text2)">veces en</span>
+          </div>
+          <div class="col-auto">
+            <label class="form-label" style="font-size:.78rem">Minutos</label>
+            <input type="number" name="threshold_window_min" class="form-control form-control-sm"
+                   value="{{ s.threshold_window_min or 30 }}" min="1" style="width:80px">
+          </div>
+        </div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">
+          Se avisa por Telegram y/o correo la primera vez que se cruza el umbral; no se repite hasta que
+          pase la misma ventana de minutos desde el último aviso.
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-3 pt-3" style="border-top:1px solid var(--border)">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="weekly_excel_report"
+               id="weekly_excel" value="1" {{ 'checked' if s.weekly_excel_report }}>
+        <label class="form-check-label" for="weekly_excel">
+          <i class="bi bi-file-earmark-spreadsheet me-1" style="color:var(--green)"></i>
+          Reporte Excel semanal por correo (cada lunes, semana anterior)
+        </label>
+      </div>
+    </div>
   </div>
 
   <div class="d-flex gap-2">

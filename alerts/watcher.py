@@ -3,6 +3,7 @@ alerts/watcher.py — Hilo de fondo que monitorea transcripciones y dispara aler
 Corre cada POLL_INTERVAL segundos. Lee transcriptions.db, cruza contra búsquedas
 activas, guarda coincidencias y dispara correos según el modo de entrega.
 """
+import html
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from datetime import datetime, date, timedelta
 from pathlib  import Path
 
 from alerts.mailer         import send_immediate, send_daily_report, send_final_report
-from alerts.telegram       import notify_match as tg_notify_match
+from alerts.telegram       import notify_match as tg_notify_match, send_telegram as tg_send_telegram
 from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
 from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
 from alerts.googlenews     import fetch_articles as gnews_fetch
@@ -28,6 +29,7 @@ ALERTS_DB     = BASE_DIR / 'alerts.db'
 TRANS_DB      = BASE_DIR / 'transcriptions.db'
 POLL_INTERVAL = 5   # segundos entre cada ciclo
 NEWS_POLL_MINUTES  = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
+WEEKLY_REPORT_WEEKDAY = 0  # lunes -- reporta la semana calendario Lun-Dom recién cerrada
 # YouTube Data API v3 tiene cuota diaria limitada (10,000 unidades/día,
 # 100 por búsqueda -- ~100 búsquedas/día en total, compartidas entre TODAS
 # las búsquedas activas con YouTube habilitado). A diferencia de Google
@@ -136,6 +138,52 @@ def _recent_match_exists(adb, search_id: int, keyword: str, channel_id: int, tim
     return row is not None
 
 
+def _check_threshold_alert(adb, s, cfg, smtp) -> None:
+    """Cuenta coincidencias de esta búsqueda en los últimos
+    threshold_window_min minutos; si cruza threshold_count, dispara UNA
+    alerta (no una por cada match subsecuente) -- cooldown = mismo
+    threshold_window_min desde la última alerta (evita re-alertar en cada
+    coincidencia nueva mientras la racha sigue activa). `s` ya trae
+    u_tg_chat_id (viene del JOIN a users en la query de búsquedas activas
+    de _process, mismo patrón que el resto de las alertas de Telegram)."""
+    window    = int(s['threshold_window_min'] or 30)
+    threshold = int(s['threshold_count'] or 5)
+    count = adb.execute("""
+        SELECT COUNT(*) c FROM matches
+        WHERE search_id=? AND found_at >= datetime('now','localtime',?)
+    """, (s['id'], f'-{window} minutes')).fetchone()['c']
+    if count < threshold:
+        return
+    last = s['last_threshold_alert'] if 'last_threshold_alert' in s.keys() else None
+    if last:
+        try:
+            last_dt = datetime.strptime(last[:19], '%Y-%m-%d %H:%M:%S')
+            if (datetime.now() - last_dt).total_seconds() < window * 60:
+                return  # cooldown activo -- ya se alertó por esta racha
+        except ValueError:
+            pass
+
+    tg_token = (cfg or {}).get('tg_token', '')
+    tg_chat  = (s['u_tg_chat_id'] if 'u_tg_chat_id' in s.keys() else '') or (cfg or {}).get('tg_chat_id', '')
+    if s['notify_telegram'] and tg_token and tg_chat:
+        msg = (f"<b>⚠️ Alerta de frecuencia — {html.escape(s['name'])}</b>\n"
+               f"{count} coincidencias en los últimos {window} min (umbral: {threshold}).")
+        try:
+            tg_send_telegram(tg_token, tg_chat, msg)
+        except Exception as e:
+            logger.error(f"[TG] threshold alert error search {s['id']}: {e}")
+    if smtp and s['report_email']:
+        try:
+            from alerts.mailer import send_threshold_alert
+            send_threshold_alert(dict(s), count, window, threshold, smtp)
+        except Exception as e:
+            logger.error(f"Threshold alert email error search {s['id']}: {e}")
+
+    adb.execute("UPDATE searches SET last_threshold_alert=? WHERE id=?",
+                (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), s['id']))
+    adb.commit()
+
+
 # ── Conexiones ────────────────────────────────────────────────────────────────
 # cache_size/mmap_size más grandes que el default -- el watcher escanea
 # transcriptions.db en un loop constante (POLL_INTERVAL), y ahora compite con
@@ -174,7 +222,7 @@ def _set_setting(adb, key: str, value: str):
 def _smtp_cfg(adb) -> dict | None:
     rows = adb.execute("SELECT key, value FROM settings").fetchall()
     cfg  = {r['key']: r['value'] for r in rows}
-    return cfg if cfg.get('smtp_host') else None
+    return cfg if (cfg.get('smtp_host') or cfg.get('gmail_refresh_token')) else None
 
 def _full_cfg(adb) -> dict:
     rows = adb.execute("SELECT key, value FROM settings").fetchall()
@@ -649,6 +697,9 @@ def _process(adb, tdb, smtp, cfg=None):
                         (s['id'], kw, row['channel_id'], row['channel_name'],
                          row['timestamp'], ctx, int(row['has_music']) if 'has_music' in row.keys() else 0))
 
+                    if 'threshold_alert_enabled' in s.keys() and s['threshold_alert_enabled']:
+                        _check_threshold_alert(adb, s, cfg, smtp)
+
                     base = {
                         'search_id':   s['id'],
                         'search_name': s['name'],
@@ -705,30 +756,98 @@ def _process(adb, tdb, smtp, cfg=None):
     adb.commit()
 
 
-def _daily_reports(adb, smtp):
-    if not smtp:
-        return
+def _daily_reports(adb, smtp, cfg=None):
+    """Corre en _daily_jobs_loop (hilo aparte, NO el loop rápido de 5s) --
+    incluye una llamada al LLM local por búsqueda (ver rag.summarize_matches,
+    medido ~85s en producción para 40 coincidencias), demasiado lenta para
+    el loop de detección en vivo.
+
+    Antes exigía report_email, así que una búsqueda 'daily' configurada
+    SOLO con Telegram nunca recibía su reporte diario -- se corrige aquí
+    agregando el JOIN a users para tg_chat_id (mismo patrón que ya usa
+    _process para el resto de las alertas de Telegram) y enviando por
+    cualquiera de los dos canales que esté configurado, no solo correo."""
     if datetime.now().hour < 7:
         return
     today = date.today().isoformat()
     searches = adb.execute("""
-        SELECT * FROM searches
-        WHERE delivery_mode='daily' AND report_email IS NOT NULL AND report_email!=''
-        AND status='active'
-        AND (last_daily_report IS NULL OR last_daily_report < ?)
+        SELECT s.*, u.tg_chat_id as u_tg_chat_id
+        FROM searches s JOIN users u ON s.user_id = u.id
+        WHERE s.delivery_mode='daily' AND s.status='active'
+        AND (s.last_daily_report IS NULL OR s.last_daily_report < ?)
     """, (today,)).fetchall()
+    if not searches:
+        return
+    tg_token       = (cfg or {}).get('tg_token', '')
+    tg_chat_global = (cfg or {}).get('tg_chat_id', '')
     for s in searches:
         matches = adb.execute("""
             SELECT * FROM matches WHERE search_id=?
             AND date(found_at,'localtime') = date('now','localtime')
             ORDER BY found_at
         """, (s['id'],)).fetchall()
+        matches_list = [dict(m) for m in matches]
+        summary = ''
+        if matches_list:
+            try:
+                from rag import summarize_matches
+                summary = summarize_matches(s['name'], matches_list)
+            except Exception as e:
+                logger.error(f"Resumen LLM error search {s['id']}: {e}")
         try:
-            send_daily_report(s, [dict(m) for m in matches], smtp)
+            if smtp and s['report_email']:
+                send_daily_report(s, matches_list, smtp, summary=summary)
+            if s['notify_telegram'] and tg_token and matches_list:
+                chat_id = (s['u_tg_chat_id'] if 'u_tg_chat_id' in s.keys() else '') or tg_chat_global
+                if chat_id and summary:
+                    msg = (f"<b>Resumen diario — {html.escape(s['name'])}</b>\n"
+                           f"{len(matches_list)} coincidencias hoy\n\n{html.escape(summary)}")
+                    tg_send_telegram(tg_token, chat_id, msg)
             adb.execute("UPDATE searches SET last_daily_report=? WHERE id=?", (today, s['id']))
             adb.commit()
         except Exception as e:
             logger.error(f"Reporte diario error search {s['id']}: {e}")
+
+
+def _weekly_excel_reports(adb, smtp):
+    """Reporte Excel semanal opt-in (weekly_excel_report=1) -- corre en
+    _daily_jobs_loop, NO en el loop rápido de 5s: armar un Workbook puede
+    tardar según el volumen de coincidencias de la semana, y no debe
+    retrasar la detección en vivo de las demás búsquedas activas."""
+    if not smtp:
+        return
+    if datetime.now().hour < 7 or datetime.now().weekday() != WEEKLY_REPORT_WEEKDAY:
+        return
+    today = date.today().isoformat()
+    searches = adb.execute("""
+        SELECT * FROM searches
+        WHERE weekly_excel_report=1 AND report_email IS NOT NULL AND report_email!=''
+        AND status='active'
+        AND (last_weekly_report IS NULL OR last_weekly_report < ?)
+    """, (today,)).fetchall()
+    if not searches:
+        return
+    from alerts.excel_report import build_workbook
+    from alerts.mailer      import send_weekly_excel_report
+    tdb = _tdb()
+    week_start = (date.today() - timedelta(days=7)).isoformat()
+    week_end   = (date.today() - timedelta(days=1)).isoformat()
+    for s in searches:
+        matches = adb.execute("""
+            SELECT * FROM matches WHERE search_id=?
+            AND date(timestamp) BETWEEN ? AND ?
+            ORDER BY timestamp ASC
+        """, (s['id'], week_start, week_end)).fetchall()
+        try:
+            output = build_workbook([(s, matches)], adb, tdb)
+            safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', s['name'])
+            fname = f"reporte_semanal_{safe_name}_{week_start}_a_{week_end}.xlsx"
+            send_weekly_excel_report(dict(s), len(matches), output.getvalue(), fname, smtp)
+            adb.execute("UPDATE searches SET last_weekly_report=? WHERE id=?", (today, s['id']))
+            adb.commit()
+        except Exception as e:
+            logger.error(f"Reporte semanal Excel error search {s['id']}: {e}")
+    tdb.close()
 
 
 def _close_expired(adb):
@@ -775,12 +894,11 @@ def _loop():
             adb  = _adb()
             tdb  = _tdb()
             cfg  = _full_cfg(adb)
-            smtp = cfg if cfg.get('smtp_host') else None
+            smtp = cfg if (cfg.get('smtp_host') or cfg.get('gmail_refresh_token')) else None
             epg_schema(adb)
             epg_refresh(adb)
             _close_expired(adb)
             _process(adb, tdb, smtp, cfg)
-            _daily_reports(adb, smtp)
             _final_reports(adb, smtp)
             adb.close()
             tdb.close()
@@ -836,9 +954,35 @@ def _youtube_loop():
         time.sleep(60)
 
 
+def _daily_jobs_loop():
+    """Hilo separado del loop rápido de 5s (_loop), mismo motivo que
+    _youtube_loop: el reporte diario (que incluye el resumen ejecutivo por
+    IA, ver rag.py:summarize_matches) y el reporte Excel semanal pueden
+    tardar del orden de decenas de segundos por búsqueda -- si corrieran
+    dentro de _loop(), varias búsquedas 'daily'/semanales activas sumarían
+    minutos de bloqueo cada mañana, retrasando la detección en vivo de
+    coincidencias para TODAS las búsquedas activas mientras tanto. Sondeo
+    cada 60s (no 5s): ambas tareas ya se autolimitan por hora del día
+    (hour < 7) y, en el caso semanal, también por día de la semana."""
+    logger.info("Hilo de reportes diarios/semanales iniciado.")
+    while True:
+        try:
+            adb  = _adb()
+            cfg  = _full_cfg(adb)
+            smtp = cfg if (cfg.get('smtp_host') or cfg.get('gmail_refresh_token')) else None
+            _daily_reports(adb, smtp, cfg)
+            _weekly_excel_reports(adb, smtp)
+            adb.close()
+        except Exception as e:
+            logger.exception(f"Error en daily_jobs_loop: {e}")
+        time.sleep(60)
+
+
 def start_watcher():
     t = threading.Thread(target=_loop, daemon=True, name='alertas-watcher')
     t.start()
     ty = threading.Thread(target=_youtube_loop, daemon=True, name='alertas-youtube')
     ty.start()
+    td = threading.Thread(target=_daily_jobs_loop, daemon=True, name='alertas-daily-jobs')
+    td.start()
     return t

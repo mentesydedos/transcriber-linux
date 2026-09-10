@@ -54,12 +54,54 @@
         Para Gmail usa una contraseña de aplicación, no tu contraseña normal.
       </div>
     </div>
-    <div>
+    <div class="mb-3">
       <label class="form-label">Nombre del remitente (From)</label>
       <input type="text" name="smtp_from" class="form-control"
              value="{{ cfg.get('smtp_from','') }}"
              placeholder="AlertaTV &lt;alertas@tudominio.com&gt;">
     </div>
+    <div class="d-flex align-items-center gap-3">
+      {% if cfg.get('smtp_host') %}
+      <span style="font-size:.8rem;color:#3fb950">
+        <i class="bi bi-check-circle-fill me-1"></i>SMTP configurado.
+      </span>
+      {% endif %}
+      <button type="submit" formaction="/settings/test_smtp" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-send me-1" style="color:#3fb950"></i>Probar conexión
+      </button>
+    </div>
+  </div>
+
+  <!-- Gmail API (OAuth) -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-1">Gmail API (OAuth) <span style="color:var(--muted);font-weight:400">— alternativa a SMTP</span></div>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">
+      Usa esto si el envío por SMTP directo no funciona (ej. la red bloquea los puertos 587/465/25).
+      Envía por HTTPS en vez de SMTP. Requiere credenciales OAuth de
+      <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>
+      (tipo "Aplicación de escritorio") y un paso único de autorización por línea de comandos
+      (<code>alerts/gmail_oauth_setup.py</code>).
+    </p>
+    <div class="mb-3">
+      <label class="form-label">Client ID</label>
+      <input type="text" name="gmail_client_id" class="form-control"
+             value="{{ cfg.get('gmail_client_id','') }}"
+             placeholder="xxxxxxxx.apps.googleusercontent.com">
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Client Secret</label>
+      <input type="password" name="gmail_client_secret" class="form-control"
+             value="{{ cfg.get('gmail_client_secret','') }}">
+    </div>
+    {% if cfg.get('gmail_refresh_token') %}
+    <div style="font-size:.8rem;color:var(--green)">
+      <i class="bi bi-check-circle-fill me-1"></i>Autorizado como <strong>{{ cfg.get('gmail_authorized_email','') }}</strong>
+    </div>
+    {% elif cfg.get('gmail_client_id') %}
+    <div style="font-size:.8rem;color:var(--muted)">
+      Guarda estos datos y luego corre el script de autorización por SSH (ver instrucciones).
+    </div>
+    {% endif %}
   </div>
 
   <!-- Telegram -->
@@ -91,11 +133,9 @@
         <i class="bi bi-check-circle-fill me-1"></i>Telegram configurado.
       </span>
       {% endif %}
-      <form method="post" action="/settings/test_telegram" class="mb-0">
-        <button type="submit" class="btn btn-sm btn-outline-secondary">
-          <i class="bi bi-send me-1" style="color:#2aabee"></i>Probar conexión
-        </button>
-      </form>
+      <button type="submit" formaction="/settings/test_telegram" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-send me-1" style="color:#2aabee"></i>Probar conexión
+      </button>
     </div>
   </div>
 
@@ -136,11 +176,9 @@
         <i class="bi bi-clock me-1"></i>Última actualización: {{ cfg.get('epg_last_fetch','')[:16] }}
       </span>
       {% endif %}
-      <form method="post" action="/settings/epg_fetch" class="mb-0">
-        <button type="submit" class="btn btn-sm btn-outline-secondary">
-          <i class="bi bi-arrow-repeat me-1"></i>Actualizar EPG ahora
-        </button>
-      </form>
+      <button type="submit" formaction="/settings/epg_fetch" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-arrow-repeat me-1"></i>Actualizar EPG ahora
+      </button>
     </div>
 
     <div class="mt-3 p-2 rounded" style="background:var(--card2);font-size:.74rem;color:var(--muted)">
@@ -153,7 +191,14 @@
   </div>
 
   <!-- Preview -->
-  {% if cfg.get('smtp_host') %}
+  {% if cfg.get('gmail_refresh_token') %}
+  <div class="p-3 rounded mb-3" style="background:#0a1a0a;border:1px solid #10b98140">
+    <div style="font-size:.8rem;color:var(--green)">
+      <i class="bi bi-check-circle-fill me-2"></i>
+      Envío por Gmail API configurado: <strong>{{ cfg.get('gmail_authorized_email','') }}</strong>
+    </div>
+  </div>
+  {% elif cfg.get('smtp_host') %}
   <div class="p-3 rounded mb-3" style="background:#0a1a0a;border:1px solid #10b98140">
     <div style="font-size:.8rem;color:var(--green)">
       <i class="bi bi-check-circle-fill me-2"></i>
@@ -165,7 +210,7 @@
   <div class="p-3 rounded mb-3" style="background:#1a0a0a;border:1px solid #ef444440">
     <div style="font-size:.8rem;color:var(--red)">
       <i class="bi bi-exclamation-triangle-fill me-2"></i>
-      Sin servidor SMTP configurado. Los correos no se enviarán hasta configurarlo.
+      Sin servidor SMTP ni Gmail API configurados. Los correos no se enviarán hasta configurar uno de los dos.
     </div>
   </div>
   {% endif %}

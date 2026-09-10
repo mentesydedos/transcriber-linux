@@ -455,6 +455,21 @@ def _init_db():
         # a esta función nunca se clasificó (has_music=0 siempre), así que
         # no oculta nada que ya existiera.
         ('exclude_music',    'INTEGER DEFAULT 1'),
+        # Alerta de pico de menciones -- ORTOGONAL a delivery_mode (no un
+        # nuevo valor del enum): una búsqueda puede querer su reporte
+        # diario/final normal Y ADEMÁS un aviso urgente si de repente se
+        # dispara la frecuencia. Mismo criterio que notify_telegram, que
+        # tampoco depende de delivery_mode. Ver watcher.py:_check_threshold_alert.
+        ('threshold_alert_enabled', 'INTEGER DEFAULT 0'),
+        ('threshold_count',         'INTEGER DEFAULT 5'),
+        ('threshold_window_min',    'INTEGER DEFAULT 30'),
+        # Cooldown: no volver a alertar hasta que pase threshold_window_min
+        # desde la última alerta de esta búsqueda.
+        ('last_threshold_alert',    'TEXT'),
+        # Reporte Excel semanal por correo, opt-in -- ver
+        # watcher.py:_weekly_excel_reports.
+        ('weekly_excel_report', 'INTEGER DEFAULT 0'),
+        ('last_weekly_report',  'TEXT'),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -862,6 +877,10 @@ def create_app() -> Flask:
             remail        = request.form.get('report_email', '').strip()
             notify_tg     = 1 if request.form.get('notify_telegram') else 0
             media_types   = ','.join(request.form.getlist('media_types')) or 'tv,radio'
+            threshold_enabled = 1 if request.form.get('threshold_alert_enabled') else 0
+            threshold_count   = int(request.form.get('threshold_count') or 5)
+            threshold_window  = int(request.form.get('threshold_window_min') or 30)
+            weekly_excel      = 1 if request.form.get('weekly_excel_report') else 0
 
             if not all([name, kw_raw, d_start, d_end]):
                 flash('Nombre, palabras y fechas son obligatorios.', 'danger')
@@ -871,12 +890,14 @@ def create_app() -> Flask:
                 cur = db().execute("""
                     INSERT INTO searches
                       (user_id,name,keywords,exclude_words,phonetic,whole_word,date_start,date_end,
-                       delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel,exclude_music)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?)
+                       delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel,exclude_music,
+                       threshold_alert_enabled,threshold_count,threshold_window_min,weekly_excel_report)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
                       json.dumps(excl, ensure_ascii=False),
                       phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types,
-                      dedup_channel, exclude_music))
+                      dedup_channel, exclude_music,
+                      threshold_enabled, threshold_count, threshold_window, weekly_excel))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada. Procesando el histórico…', 'success')
                 # Al detalle, no al dashboard -- ahí ya está el banner de progreso
@@ -1544,6 +1565,10 @@ def create_app() -> Flask:
             # DE AQUÍ EN ADELANTE, no reinterpreta lo ya escaneado.
             new_dedup  = 1 if request.form.get('dedup_channel') else 0
             new_exclude_music = 1 if request.form.get('exclude_music') else 0
+            new_threshold_enabled = 1 if request.form.get('threshold_alert_enabled') else 0
+            new_threshold_count   = int(request.form.get('threshold_count') or 5)
+            new_threshold_window  = int(request.form.get('threshold_window_min') or 30)
+            new_weekly_excel      = 1 if request.form.get('weekly_excel_report') else 0
 
             # Si cambian fechas, palabras, exclusiones, tipo de búsqueda, medios
             # o el filtro de música → re-escanear histórico (exclude_music SÍ
@@ -1563,13 +1588,16 @@ def create_app() -> Flask:
                 UPDATE searches SET
                   name=?, keywords=?, exclude_words=?, phonetic=?, whole_word=?, date_start=?, date_end=?,
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
-                  initialized=?, media_types=?, dedup_channel=?, exclude_music=?
+                  initialized=?, media_types=?, dedup_channel=?, exclude_music=?,
+                  threshold_alert_enabled=?, threshold_count=?, threshold_window_min=?,
+                  weekly_excel_report=?
                 WHERE id=?
             """, (name, new_kws, new_excl, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
                   request.form.get('report_email', '').strip(),
                   request.form.get('status', 'active'), notify_tg,
                   0 if needs_reinit else s['initialized'], new_media, new_dedup, new_exclude_music,
+                  new_threshold_enabled, new_threshold_count, new_threshold_window, new_weekly_excel,
                   sid))
 
             if needs_reinit:
@@ -1629,8 +1657,8 @@ def create_app() -> Flask:
         matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC", params).fetchall()
         rows    = d.execute("SELECT key,value FROM settings").fetchall()
         cfg     = {r['key']: r['value'] for r in rows}
-        if not cfg.get('smtp_host'):
-            flash('Configura el servidor SMTP primero.', 'warning')
+        if not cfg.get('smtp_host') and not cfg.get('gmail_refresh_token'):
+            flash('Configura el servidor SMTP o Gmail API primero.', 'warning')
         else:
             ok, msg = send_report(s, [dict(m) for m in matches], cfg, 'manual')
             flash(msg, 'success' if ok else 'danger')
@@ -1665,6 +1693,22 @@ def create_app() -> Flask:
             flash('Reporte enviado a Telegram.' if ok else f'Error Telegram: {err}',
                   'success' if ok else 'danger')
         return redirect(url_for('search_detail', sid=sid))
+
+    @app.route('/settings/test_smtp', methods=['POST'])
+    @admin_required
+    def settings_test_smtp():
+        from alerts.mailer import test_connection
+        d   = db()
+        cfg = {r['key']: r['value'] for r in d.execute("SELECT key,value FROM settings")}
+        to  = cfg.get('gmail_authorized_email', '') if cfg.get('gmail_refresh_token') else cfg.get('smtp_user', '')
+        if not cfg.get('gmail_refresh_token') and not cfg.get('smtp_host'):
+            flash('Configura el servidor SMTP o autoriza Gmail API antes de probar.', 'warning')
+        elif not to:
+            flash('Falta el correo de destino de la prueba.', 'warning')
+        else:
+            ok, msg = test_connection(cfg, to)
+            flash(msg, 'success' if ok else 'danger')
+        return redirect(url_for('settings'))
 
     @app.route('/settings/test_telegram', methods=['POST'])
     @admin_required
@@ -1892,6 +1936,7 @@ def create_app() -> Flask:
         d = db()
         if request.method == 'POST':
             for k in ['smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_tls',
+                      'gmail_client_id','gmail_client_secret',
                       'tg_token','tg_chat_id']:
                 d.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
                           (k, request.form.get(k, '')))
@@ -2052,12 +2097,7 @@ def create_app() -> Flask:
     @app.route('/export', methods=['POST'])
     @login_required
     def export():
-        import io
-        import openpyxl
-        from openpyxl.styles          import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils           import get_column_letter
-        from openpyxl.cell.rich_text  import CellRichText, TextBlock
-        from openpyxl.cell.text       import InlineFont
+        from alerts.excel_report import build_workbook
 
         search_ids = request.form.getlist('search_ids')
         search_ids = [int(x) for x in search_ids if x.isdigit()]
@@ -2076,57 +2116,7 @@ def create_app() -> Flask:
         d   = db()
         tdb = _connect_trans_db()
 
-        from alerts.epg import get_programme_at
-
-        wb = openpyxl.Workbook()
-        wb.remove(wb.active)
-
-        # Estilos
-        h_font   = Font(bold=True, color='FFFFFF', size=11, name='Calibri')
-        h_fill   = PatternFill('solid', fgColor='1D4ED8')
-        h_align  = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        thin     = Side(style='thin', color='CBD5E1')
-        border   = Border(left=thin, right=thin, top=thin, bottom=thin)
-        alt_fill = PatternFill('solid', fgColor='F1F5F9')
-        hl_fill  = PatternFill('solid', fgColor='FEF9C3')   # amarillo suave para fila activa
-
-        def _bold_kw(text, keyword, phonetic=False, whole_word=False):
-            """Devuelve CellRichText con la keyword en negrita.
-            Modo exacto: case-insensitive. Modo fonético: resalta cada palabra
-            del texto que sea fonéticamente equivalente al keyword. En modo
-            whole_word exige límites de palabra (no resalta "día" dentro de
-            "diálogo")."""
-            if not text or not keyword:
-                return text or ''
-            bold = InlineFont(b=True, color='1D4ED8')
-            parts, last = [], 0
-            if phonetic:
-                ph_kw   = _phonetic(keyword)
-                pattern = re.compile(r'(?<!\w)' + re.escape(ph_kw) + r'(?!\w)') if whole_word else None
-                for m in re.finditer(r'\S+', text):
-                    word    = m.group()
-                    word_ph = _phonetic(word)
-                    matched = bool(pattern.search(word_ph)) if whole_word else (ph_kw in word_ph)
-                    if matched:
-                        if m.start() > last:
-                            parts.append(text[last:m.start()])
-                        parts.append(TextBlock(bold, word))
-                        last = m.end()
-            else:
-                kw_pattern = re.escape(keyword)
-                if whole_word:
-                    kw_pattern = r'(?<!\w)' + kw_pattern + r'(?!\w)'
-                for m in re.compile(kw_pattern, re.IGNORECASE).finditer(text):
-                    if m.start() > last:
-                        parts.append(text[last:m.start()])
-                    parts.append(TextBlock(bold, m.group()))
-                    last = m.end()
-            if last < len(text):
-                parts.append(text[last:])
-            return CellRichText(*parts) if parts else text
-
-        WINDOW_SEC = 15
-
+        sheets_data = []
         for sid in search_ids:
             s = _get_search(sid)
             if not s:
@@ -2141,125 +2131,15 @@ def create_app() -> Flask:
                 matches = d.execute(
                     "SELECT * FROM matches WHERE search_id=? ORDER BY timestamp ASC", (sid,)
                 ).fetchall()
+            sheets_data.append((s, matches))
 
-            # ── Precarga de contexto: 1 query por canal en vez de 1 por fila ──
-            channel_ranges = {}
-            for m in matches:
-                cid, ts = m['channel_id'], m['timestamp']
-                if cid and ts:
-                    lo, hi = channel_ranges.get(cid, (ts, ts))
-                    channel_ranges[cid] = (min(lo, ts), max(hi, ts))
-
-            ctx_data = {}   # channel_id -> [(timestamp_str, text), ...]
-            for cid, (ts_min, ts_max) in channel_ranges.items():
-                trans_rows = tdb.execute("""
-                    SELECT timestamp, text FROM transcriptions
-                    WHERE channel_id = ?
-                      AND timestamp >= datetime(?, ?)
-                      AND timestamp <= datetime(?, ?)
-                      AND text IS NOT NULL AND text != '[~]'
-                    ORDER BY timestamp ASC
-                """, (cid,
-                      ts_min, f'-{WINDOW_SEC} seconds',
-                      ts_max, f'+{WINDOW_SEC} seconds')).fetchall()
-                ctx_data[cid] = [(r['timestamp'], r['text']) for r in trans_rows]
-
-            def _get_context(channel_id, timestamp):
-                if not channel_id or not timestamp:
-                    return ''
-                entries = ctx_data.get(channel_id, [])
-                if not entries:
-                    return ''
-                dt = datetime.strptime(timestamp[:19], '%Y-%m-%d %H:%M:%S')
-                lo = (dt - timedelta(seconds=WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
-                hi = (dt + timedelta(seconds=WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
-                return ' '.join(t for ts2, t in entries if lo <= ts2 <= hi)
-
-            sheet_name = re.sub(r'[\\/*?:\[\]]', '', s['name'])[:31] or f'Busqueda_{sid}'
-            ws = wb.create_sheet(title=sheet_name)
-
-            # ── Encabezado ──
-            ws.merge_cells('A1:G1')
-            c = ws['A1']
-            c.value     = f"Monitoreo ITESO — {s['name']}"
-            c.font      = Font(bold=True, size=13, color='1D4ED8', name='Calibri')
-            c.alignment = Alignment(horizontal='center', vertical='center')
-            ws.row_dimensions[1].height = 22
-
-            ws['A2'] = f"Período: {s['date_start']} → {s['date_end']}"
-            ws['C2'] = f"Total coincidencias: {len(matches)}"
-            ws['G2'] = f"Exportado: {date.today().isoformat()}"
-            for cell in [ws['A2'], ws['C2'], ws['G2']]:
-                cell.font = Font(italic=True, size=9, color='64748B', name='Calibri')
-            ws.row_dimensions[2].height = 16
-            ws.append([])
-
-            # ── Cabeceras ──
-            headers = ['Fecha / Hora Señal', 'Canal', 'Programa (EPG)',
-                       'Palabra Detectada', 'Segmento detectado',
-                       'Contexto ampliado (±15 seg)', 'Fecha Detección']
-            ws.append(headers)
-            hrow = ws.max_row
-            for col in range(1, len(headers) + 1):
-                cell = ws.cell(row=hrow, column=col)
-                cell.font      = h_font
-                cell.fill      = h_fill
-                cell.alignment = h_align
-                cell.border    = border
-            ws.row_dimensions[hrow].height = 20
-
-            # ── Datos ──
-            for i, m in enumerate(matches):
-                row_num  = hrow + 1 + i
-                contexto = _get_context(m['channel_id'], m['timestamp'])
-                programa = get_programme_at(d, m['channel_name'] or '', m['timestamp'] or '')
-
-                ws.cell(row=row_num, column=1, value=str(m['timestamp'] or '')[:19])
-                ws.cell(row=row_num, column=2, value=m['channel_name'] or '')
-                ws.cell(row=row_num, column=3, value=programa)
-                ws.cell(row=row_num, column=4, value=m['keyword'] or '')
-                ws.cell(row=row_num, column=5, value=_bold_kw(m['matched_text'] or '', m['keyword'] or '', bool(s['phonetic']), bool(s['whole_word'])))
-                ws.cell(row=row_num, column=6, value=_bold_kw(contexto, m['keyword'] or '', bool(s['phonetic']), bool(s['whole_word'])))
-                ws.cell(row=row_num, column=7, value=str(m['found_at'] or '')[:19])
-
-                fill = alt_fill if i % 2 == 0 else None
-                for col in range(1, len(headers) + 1):
-                    cell = ws.cell(row=row_num, column=col)
-                    cell.font      = Font(size=10, name='Calibri')
-                    cell.border    = border
-                    cell.alignment = Alignment(vertical='top',
-                                               wrap_text=(col in (5, 6)))
-                    if fill:
-                        cell.fill = fill
-
-                # Altura dinámica según longitud del contexto
-                ctx_len = len(contexto)
-                ws.row_dimensions[row_num].height = (
-                    80 if ctx_len > 500 else
-                    50 if ctx_len > 200 else
-                    30 if ctx_len > 80  else 18
-                )
-
-            # ── Anchos ──
-            ws.column_dimensions['A'].width = 22
-            ws.column_dimensions['B'].width = 18
-            ws.column_dimensions['C'].width = 30
-            ws.column_dimensions['D'].width = 20
-            ws.column_dimensions['E'].width = 50
-            ws.column_dimensions['F'].width = 80
-            ws.column_dimensions['G'].width = 22
-
-            ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
-
-        tdb.close()
-
-        if not wb.sheetnames:
+        if not sheets_data:
+            tdb.close()
             flash('No se encontraron búsquedas válidas.', 'warning')
             return redirect(url_for('dashboard'))
 
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
+        output = build_workbook(sheets_data, d, tdb)
+        tdb.close()
 
         filename = f"monitoreo_iteso_{date.today().isoformat()}.xlsx"
         return send_file(
