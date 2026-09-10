@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import unicodedata
 from datetime    import date, datetime, timedelta
 from functools   import wraps, lru_cache
@@ -17,9 +18,10 @@ from flask              import (Flask, g, flash, jsonify, redirect,
 from markupsafe         import Markup, escape as html_escape
 from werkzeug.security  import check_password_hash, generate_password_hash
 
-BASE_DIR  = Path(__file__).parent.parent
-ALERTS_DB = BASE_DIR / 'alerts.db'
-TRANS_DB  = BASE_DIR / 'transcriptions.db'
+BASE_DIR   = Path(__file__).parent.parent
+ALERTS_DB  = BASE_DIR / 'alerts.db'
+TRANS_DB   = BASE_DIR / 'transcriptions.db'
+EXPORT_DIR = BASE_DIR / 'export_files'
 
 
 # ── Resaltado de keywords ─────────────────────────────────────────────────────
@@ -404,6 +406,18 @@ CREATE TABLE IF NOT EXISTS text_corrections (
     pattern     TEXT NOT NULL,
     replacement TEXT NOT NULL,
     created_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+-- Exportación a Excel en segundo plano (ver export()/_run_export_job) --
+-- armar el Workbook de una búsqueda grande puede tardar más que el timeout
+-- de Nginx (60s), así que /export ya no bloquea la petición: crea un job
+-- aquí, lo procesa un hilo aparte, y la página hace polling hasta 'done'.
+CREATE TABLE IF NOT EXISTS export_jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER,
+    status     TEXT DEFAULT 'pending',   -- pending | done | error
+    filename   TEXT,
+    error      TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_m_search ON matches(search_id);
 CREATE INDEX IF NOT EXISTS idx_m_found  ON matches(found_at);
@@ -2094,59 +2108,114 @@ def create_app() -> Flask:
     # ══════════════════════════════════════════════════════════════
     # EXPORTAR A EXCEL
     # ══════════════════════════════════════════════════════════════
+    def _run_export_job(job_id, search_ids, single, kfs, cfs, pfs, mfs, date_from, date_to):
+        """Corre en un hilo aparte (ver export()) -- arma el Workbook fuera
+        del ciclo petición/respuesta de Nginx, que corta a los 60s (ver
+        búsquedas grandes como 'sheinbaum', con miles de coincidencias).
+        Usa sus propias conexiones (no db()/g, que son de request)."""
+        from alerts.excel_report import build_workbook
+        jd  = sqlite3.connect(str(ALERTS_DB), timeout=10)
+        jd.row_factory = sqlite3.Row
+        tdb = _connect_trans_db()
+        try:
+            sheets_data = []
+            for sid in search_ids:
+                s = jd.execute("SELECT * FROM searches WHERE id=?", (sid,)).fetchone()
+                if not s:
+                    continue
+                if single and any([kfs, cfs, pfs, mfs, date_from, date_to]):
+                    w, p = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+                    matches = jd.execute(f"SELECT * FROM matches WHERE {w} ORDER BY timestamp ASC", p).fetchall()
+                else:
+                    matches = jd.execute(
+                        "SELECT * FROM matches WHERE search_id=? ORDER BY timestamp ASC", (sid,)
+                    ).fetchall()
+                sheets_data.append((s, matches))
+
+            if not sheets_data:
+                jd.execute("UPDATE export_jobs SET status='error', error=? WHERE id=?",
+                           ('No se encontraron búsquedas válidas.', job_id))
+                jd.commit()
+                return
+
+            output   = build_workbook(sheets_data, jd, tdb)
+            EXPORT_DIR.mkdir(exist_ok=True)
+            filename = f"monitoreo_iteso_{date.today().isoformat()}_{job_id}.xlsx"
+            (EXPORT_DIR / filename).write_bytes(output.getvalue())
+            jd.execute("UPDATE export_jobs SET status='done', filename=? WHERE id=?", (filename, job_id))
+            jd.commit()
+        except Exception as e:
+            jd.execute("UPDATE export_jobs SET status='error', error=? WHERE id=?", (str(e), job_id))
+            jd.commit()
+        finally:
+            tdb.close()
+            jd.close()
+
     @app.route('/export', methods=['POST'])
     @login_required
     def export():
-        from alerts.excel_report import build_workbook
-
         search_ids = request.form.getlist('search_ids')
         search_ids = [int(x) for x in search_ids if x.isdigit()]
         if not search_ids:
             flash('Selecciona al menos una búsqueda.', 'warning')
             return redirect(url_for('dashboard'))
-        # Filtros opcionales (solo aplican si viene de una búsqueda individual)
-        _exp_kfs       = request.form.getlist('kw')
-        _exp_cfs       = request.form.getlist('ch')
-        _exp_pfs       = request.form.getlist('prog')
-        _exp_mfs       = request.form.getlist('mt')
-        _exp_date_from = request.form.get('date_from', '')
-        _exp_date_to   = request.form.get('date_to', '')
-        _exp_single    = len(search_ids) == 1   # filtros solo para exportación individual
-
-        d   = db()
-        tdb = _connect_trans_db()
-
-        sheets_data = []
-        for sid in search_ids:
-            s = _get_search(sid)
-            if not s:
-                continue
-
-            if _exp_single and any([_exp_kfs, _exp_cfs, _exp_pfs, _exp_mfs, _exp_date_from, _exp_date_to]):
-                _w, _p = _match_where(sid, _exp_kfs, _exp_cfs, _exp_pfs, _exp_mfs, _exp_date_from, _exp_date_to)
-                matches = d.execute(
-                    f"SELECT * FROM matches WHERE {_w} ORDER BY timestamp ASC", _p
-                ).fetchall()
-            else:
-                matches = d.execute(
-                    "SELECT * FROM matches WHERE search_id=? ORDER BY timestamp ASC", (sid,)
-                ).fetchall()
-            sheets_data.append((s, matches))
-
-        if not sheets_data:
-            tdb.close()
+        # Valida acceso aquí (con sesión disponible) -- el hilo de fondo ya
+        # no puede usar _get_search (depende de session).
+        valid_ids = [sid for sid in search_ids if _get_search(sid)]
+        if not valid_ids:
             flash('No se encontraron búsquedas válidas.', 'warning')
             return redirect(url_for('dashboard'))
 
-        output = build_workbook(sheets_data, d, tdb)
-        tdb.close()
+        # Filtros opcionales (solo aplican si viene de una búsqueda individual)
+        kfs       = request.form.getlist('kw')
+        cfs       = request.form.getlist('ch')
+        pfs       = request.form.getlist('prog')
+        mfs       = request.form.getlist('mt')
+        date_from = request.form.get('date_from', '')
+        date_to   = request.form.get('date_to', '')
+        single    = len(valid_ids) == 1
 
-        filename = f"monitoreo_iteso_{date.today().isoformat()}.xlsx"
+        cur = db().execute("INSERT INTO export_jobs (user_id,status) VALUES (?,'pending')",
+                            (session['uid'],))
+        db().commit()
+        job_id = cur.lastrowid
+
+        threading.Thread(target=_run_export_job, daemon=True, name=f'export-{job_id}',
+                          args=(job_id, valid_ids, single, kfs, cfs, pfs, mfs, date_from, date_to)).start()
+        return redirect(url_for('export_status', job_id=job_id))
+
+    @app.route('/export/<int:job_id>')
+    @login_required
+    def export_status(job_id):
+        job = db().execute("SELECT * FROM export_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or (session.get('role') != 'admin' and job['user_id'] != session['uid']):
+            flash('Reporte no encontrado.', 'danger')
+            return redirect(url_for('dashboard'))
+        return render_template('export_status.html', job=job)
+
+    @app.route('/api/export/<int:job_id>/status')
+    @login_required
+    def api_export_status(job_id):
+        job = db().execute("SELECT * FROM export_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or (session.get('role') != 'admin' and job['user_id'] != session['uid']):
+            return jsonify(error='not found'), 404
+        return jsonify(status=job['status'], error=job['error'])
+
+    @app.route('/export/<int:job_id>/file')
+    @login_required
+    def export_file(job_id):
+        job = db().execute("SELECT * FROM export_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or (session.get('role') != 'admin' and job['user_id'] != session['uid']):
+            flash('Reporte no encontrado.', 'danger')
+            return redirect(url_for('dashboard'))
+        if job['status'] != 'done' or not job['filename']:
+            flash('El reporte todavía no está listo.', 'warning')
+            return redirect(url_for('export_status', job_id=job_id))
         return send_file(
-            output,
+            EXPORT_DIR / job['filename'],
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name=filename,
+            download_name=f"monitoreo_iteso_{date.today().isoformat()}.xlsx",
         )
 
     return app

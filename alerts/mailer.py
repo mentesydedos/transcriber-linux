@@ -1,13 +1,18 @@
 """
 alerts/mailer.py — Envío de correos para alertas y reportes.
 """
-import base64, smtplib, ssl
+import base64, io, re, smtplib, ssl
 from email.mime.application import MIMEApplication
 from email.mime.multipart   import MIMEMultipart
 from email.mime.text        import MIMEText
 from datetime                import datetime
 
 import requests
+
+# Por encima de esto, la tabla HTML inline se vuelve pesada (Gmail recorta
+# mensajes de más de ~102KB con un "mensaje truncado") y poco legible -- se
+# manda un .xlsx adjunto con el detalle completo en vez de la tabla.
+MAX_INLINE_MATCHES = 300
 
 
 # ── Estilos del correo ────────────────────────────────────────────────────────
@@ -217,20 +222,62 @@ def send_weekly_excel_report(search: dict, total_matches: int, attachment_bytes:
         return False, str(e)
 
 
+def _matches_xlsx(matches: list[dict]) -> bytes:
+    """.xlsx simple (sin contexto EPG/transcripción, a diferencia de
+    excel_report.build_workbook) -- solo las mismas columnas de la tabla
+    HTML, para reportes con demasiadas coincidencias para ir inline."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Coincidencias'
+    ws.append(['Palabra', 'Canal', 'Fecha/Hora', 'Texto'])
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='1D4ED8')
+    for m in matches:
+        ws.append([
+            m.get('keyword', ''),
+            m.get('channel_name', ''),
+            str(m.get('timestamp', ''))[:19],
+            m.get('matched_text', ''),
+        ])
+    for col, width in zip('ABCD', (18, 24, 18, 100)):
+        ws.column_dimensions[col].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def send_report(search, matches: list[dict], cfg: dict, mode: str = 'manual', summary: str = None) -> tuple[bool, str]:
-    to   = search['report_email'] if isinstance(search, dict) else search.report_email
-    name = search['name']         if isinstance(search, dict) else search.name
+    # search puede llegar como dict o como sqlite3.Row (ver watcher.py y
+    # app.py:search_report) -- ambos soportan acceso por clave con [].
+    to   = search['report_email']
+    name = search['name']
     if not to:
         return False, 'Sin correo destino configurado'
     titles = {'daily': 'Reporte Diario', 'final': 'Reporte Final', 'manual': 'Reporte Manual'}
     title  = titles.get(mode, 'Reporte')
     subject = f"\U0001f4ca {title}: {name} — {len(matches)} coincidencias"
-    rows = ''.join(f"""<tr>
-      <td><span class="kw">{m.get('keyword','')}</span></td>
-      <td style="color:#3fb950">{m.get('channel_name','—')}</td>
-      <td style="color:#8b949e">{str(m.get('timestamp',''))[:19]}</td>
-      <td style="color:#c9d1d9">{str(m.get('matched_text',''))[:140]}</td>
-    </tr>""" for m in matches[:1000])
+    attachment = None
+    if len(matches) > MAX_INLINE_MATCHES:
+        safe_name  = re.sub(r'[^A-Za-z0-9_-]', '_', name)
+        attachment = (_matches_xlsx(matches), f'{mode}_{safe_name}.xlsx')
+        table_html = f"""<div class="match">
+          <div class="txt">Este reporte tiene <strong>{len(matches)}</strong> coincidencias --
+          demasiadas para mostrarlas aquí. Revisa el archivo Excel adjunto para el detalle completo.</div>
+        </div>"""
+    else:
+        rows = ''.join(f"""<tr>
+          <td><span class="kw">{m.get('keyword','')}</span></td>
+          <td style="color:#3fb950">{m.get('channel_name','—')}</td>
+          <td style="color:#8b949e">{str(m.get('timestamp',''))[:19]}</td>
+          <td style="color:#c9d1d9">{str(m.get('matched_text',''))[:140]}</td>
+        </tr>""" for m in matches)
+        table_html = f"""<table><tr><th>Palabra</th><th>Canal</th><th>Fecha/Hora</th><th>Texto</th></tr>
+        {rows}
+        </table>"""
     # Resumen ejecutivo por IA (ver rag.py:summarize_matches) -- solo en el
     # reporte diario, un bloque destacado antes de la tabla completa.
     summary_html = f"""
@@ -244,14 +291,13 @@ def send_report(search, matches: list[dict], cfg: dict, mode: str = 'manual', su
       <p>Total: <strong>{len(matches)}</strong> coincidencias · {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
     </div>
     {summary_html}
-    <table><tr><th>Palabra</th><th>Canal</th><th>Fecha/Hora</th><th>Texto</th></tr>
-    {rows}
-    </table>
+    {table_html}
     <div class="ftr">AlertaTV — Sistema de monitoreo TV</div>
     </div></body></html>"""
     try:
-        _send(cfg, to, subject, html)
-        return True, f'{title} enviado a {to}'
+        _send(cfg, to, subject, html, attachment=attachment)
+        extra = ' (Excel adjunto)' if attachment else ''
+        return True, f'{title} de «{name}» enviado a {to}{extra}'
     except Exception as e:
         return False, str(e)
 

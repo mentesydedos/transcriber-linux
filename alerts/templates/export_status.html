@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}Generando reporte — AlertaTV{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7 col-xl-5">
+
+<div class="page-title mb-1">Reporte Excel</div>
+<p style="color:var(--text2);font-size:.875rem;margin-bottom:1.5rem">
+  Los reportes grandes se arman en segundo plano para no toparse con el
+  límite de tiempo del navegador/servidor.
+</p>
+
+<div class="card p-4" id="export-card">
+  {% if job.status == 'pending' %}
+  <div class="d-flex align-items-center gap-3">
+    <div class="spinner-border" style="color:var(--accent);width:1.6rem;height:1.6rem" role="status"></div>
+    <div>
+      <div style="font-weight:600">Generando el archivo…</div>
+      <div style="font-size:.8rem;color:var(--muted)" id="export-sub">
+        Puede tardar varios minutos si la búsqueda tiene muchas coincidencias.
+      </div>
+    </div>
+  </div>
+  {% elif job.status == 'done' %}
+  <div style="font-size:.85rem;color:var(--green);margin-bottom:.9rem">
+    <i class="bi bi-check-circle-fill me-1"></i>Reporte listo.
+  </div>
+  <a href="{{ url_for('export_file', job_id=job.id) }}" class="btn btn-primary px-4 fw-semibold">
+    <i class="bi bi-download me-1"></i>Descargar Excel
+  </a>
+  {% else %}
+  <div style="font-size:.85rem;color:var(--red)">
+    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+    No se pudo generar el reporte{{ ': ' ~ job.error if job.error else '' }}.
+  </div>
+  {% endif %}
+</div>
+
+<div class="mt-3">
+  <a href="{{ url_for('dashboard') }}" style="font-size:.85rem;color:var(--muted)">← Volver al dashboard</a>
+</div>
+
+</div>
+</div>
+
+{% if job.status == 'pending' %}
+<script>
+(function(){
+  const jobId = {{ job.id }};
+  function poll(){
+    fetch('/api/export/' + jobId + '/status')
+      .then(r => r.json())
+      .then(d => {
+        if(d.status && d.status !== 'pending'){
+          location.reload();
+          return;
+        }
+        setTimeout(poll, 3000);
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
+{% endif %}
+{% endblock %}

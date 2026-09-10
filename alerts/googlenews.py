@@ -59,8 +59,17 @@ def _clean_title(raw_title: str, source: str) -> str:
     return raw_title
 
 
+# Tope real observado del feed (no documentado oficialmente por Google,
+# puede cambiar) -- confirmado empíricamente pidiendo un solo día sin
+# recorte local: el RSS nunca entrega más de 100 <item>, sin importar qué
+# tan grande sea el rango de after:/before:. El límite anterior de esta
+# función (50) NO era de Google, era un recorte propio que tiraba a la
+# basura la mitad de lo que Google ya mandaba.
+GOOGLE_RSS_CAP = 100
+
+
 def fetch_articles(query: str, date_from: str | None = None, date_to: str | None = None,
-                    limit: int = 50) -> list[dict]:
+                    limit: int = GOOGLE_RSS_CAP) -> list[dict]:
     """Devuelve [{title, link, source, source_domain, published}] para una
     keyword. date_from/date_to en formato 'YYYY-MM-DD' (opcional, acota con
     after:/before:). published es datetime naive en hora local.
@@ -112,3 +121,27 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
             'published':     pub_dt,
         })
     return out
+
+
+def fetch_articles_range(query: str, date_from: str, date_to: str) -> list[dict]:
+    """Como fetch_articles, pero para rangos históricos amplios: si la
+    respuesta viene al tope real de Google (GOOGLE_RSS_CAP), asume que hay
+    más artículos de los que el feed puede entregar en una sola consulta y
+    parte el rango a la mitad recursivamente -- cada mitad compite por su
+    propio cupo de 100 en vez de repartir ese cupo entre semanas de datos.
+
+    El piso es un solo día: after:/before: de Google solo entiende fechas
+    completas (confirmado -- agregarle hora a la fecha hace que la consulta
+    no devuelva nada), así que no hay forma de acotar más fino que eso. Si
+    un solo día por sí solo ya topa en 100, esos artículos de más
+    simplemente no están disponibles vía este feed -- límite real del
+    RSS público, no de este código."""
+    articles = fetch_articles(query, date_from=date_from, date_to=date_to, limit=GOOGLE_RSS_CAP + 1)
+    if len(articles) <= GOOGLE_RSS_CAP or date_from == date_to:
+        return articles
+    d0  = datetime.strptime(date_from, '%Y-%m-%d').date()
+    d1  = datetime.strptime(date_to,   '%Y-%m-%d').date()
+    mid = d0 + (d1 - d0) // 2
+    left  = fetch_articles_range(query, date_from, mid.isoformat())
+    right = fetch_articles_range(query, (mid + timedelta(days=1)).isoformat(), date_to)
+    return left + right

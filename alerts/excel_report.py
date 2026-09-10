@@ -12,6 +12,7 @@ search_ids y volver a consultar la DB internamente (esa parte, que sí varía
 según quién llama -- filtros del navegador vs. rango fijo semanal -- se
 queda en cada caller).
 """
+import bisect
 import io
 import re
 from datetime import datetime, timedelta
@@ -20,8 +21,6 @@ import openpyxl
 from openpyxl.styles         import Font, PatternFill, Alignment, Border, Side
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text      import InlineFont
-
-from alerts.epg import get_programme_at
 
 WINDOW_SEC = 15
 
@@ -77,6 +76,14 @@ def build_workbook(sheets_data: list[tuple], d, tdb) -> io.BytesIO:
     thin     = Side(style='thin', color='CBD5E1')
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
     alt_fill = PatternFill('solid', fgColor='F1F5F9')
+    # Reusar las MISMAS instancias de Font/Alignment en vez de crear una
+    # nueva por celda (antes: ~215,000 objetos para una búsqueda de 30,818
+    # filas) -- openpyxl deduplica estilos internamente comparando/hasheando
+    # cada uno contra su tabla de estilos, así que crear uno nuevo por celda
+    # multiplicaba ese costo por cada celda en vez de pagarlo una sola vez.
+    data_font    = Font(size=10, name='Calibri')
+    align_wrap   = Alignment(vertical='top', wrap_text=True)
+    align_nowrap = Alignment(vertical='top', wrap_text=False)
 
     for s, matches in sheets_data:
         # ── Precarga de contexto: 1 query por canal en vez de 1 por fila ──
@@ -87,7 +94,15 @@ def build_workbook(sheets_data: list[tuple], d, tdb) -> io.BytesIO:
                 lo, hi = channel_ranges.get(cid, (ts, ts))
                 channel_ranges[cid] = (min(lo, ts), max(hi, ts))
 
-        ctx_data = {}   # channel_id -> [(timestamp_str, text), ...]
+        # ctx_data: channel_id -> (ts_list, text_list), ambas ordenadas por
+        # timestamp (ASC en la query). Con búsquedas de rango amplio (semanas/
+        # meses) y muchos canales, esto puede traer cientos de miles de filas
+        # por canal -- filtrar cada coincidencia con un barrido lineal sobre
+        # esa lista completa (como se hacía antes) es O(coincidencias × filas
+        # por canal): con una búsqueda de ~31,000 coincidencias en 59 canales
+        # a lo largo de un mes, eso tardaba más de 6 minutos. Al estar ya
+        # ordenada, bisect encuentra el rango ±15s en O(log n) por coincidencia.
+        ctx_data = {}
         for cid, (ts_min, ts_max) in channel_ranges.items():
             trans_rows = tdb.execute("""
                 SELECT timestamp, text FROM transcriptions
@@ -99,18 +114,54 @@ def build_workbook(sheets_data: list[tuple], d, tdb) -> io.BytesIO:
             """, (cid,
                   ts_min, f'-{WINDOW_SEC} seconds',
                   ts_max, f'+{WINDOW_SEC} seconds')).fetchall()
-            ctx_data[cid] = [(r['timestamp'], r['text']) for r in trans_rows]
+            ctx_data[cid] = ([r['timestamp'] for r in trans_rows],
+                              [r['text']      for r in trans_rows])
 
         def _get_context(channel_id, timestamp):
             if not channel_id or not timestamp:
                 return ''
-            entries = ctx_data.get(channel_id, [])
-            if not entries:
+            ts_list, text_list = ctx_data.get(channel_id, ([], []))
+            if not ts_list:
                 return ''
             dt = datetime.strptime(timestamp[:19], '%Y-%m-%d %H:%M:%S')
             lo = (dt - timedelta(seconds=WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
             hi = (dt + timedelta(seconds=WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
-            return ' '.join(t for ts2, t in entries if lo <= ts2 <= hi)
+            i = bisect.bisect_left(ts_list, lo)
+            j = bisect.bisect_right(ts_list, hi)
+            return ' '.join(text_list[i:j])
+
+        # Mismo problema y misma solución para el EPG: antes get_programme_at
+        # hacía 1 SELECT por coincidencia (30,818 round-trips en este caso).
+        # Se precarga por channel_name (así se guarda el EPG, no por
+        # channel_id) y se resuelve localmente con bisect.
+        epg_ranges = {}
+        for m in matches:
+            cn, ts = m['channel_name'], m['timestamp']
+            if cn and ts:
+                lo, hi = epg_ranges.get(cn, (ts, ts))
+                epg_ranges[cn] = (min(lo, ts), max(hi, ts))
+
+        epg_data = {}   # channel_name -> (start_list, [(stop, title), ...]) ordenados por start_ts
+        for cn, (ts_min, ts_max) in epg_ranges.items():
+            prog_rows = d.execute("""
+                SELECT start_ts, stop_ts, title FROM epg_programmes
+                WHERE channel_name = ? AND start_ts <= ? AND stop_ts > ?
+                ORDER BY start_ts ASC
+            """, (cn, ts_max, ts_min)).fetchall()
+            epg_data[cn] = ([r['start_ts'] for r in prog_rows],
+                             [(r['stop_ts'], r['title']) for r in prog_rows])
+
+        def _get_programme(channel_name, timestamp):
+            if not channel_name or not timestamp:
+                return ''
+            start_list, rest = epg_data.get(channel_name, ([], []))
+            if not start_list:
+                return ''
+            i = bisect.bisect_right(start_list, timestamp) - 1
+            if i < 0:
+                return ''
+            stop_ts, title = rest[i]
+            return (title or '') if timestamp < stop_ts else ''
 
         sheet_name = re.sub(r'[\\/*?:\[\]]', '', s['name'])[:31] or f"Busqueda_{s['id']}"
         ws = wb.create_sheet(title=sheet_name)
@@ -149,7 +200,7 @@ def build_workbook(sheets_data: list[tuple], d, tdb) -> io.BytesIO:
         for i, m in enumerate(matches):
             row_num  = hrow + 1 + i
             contexto = _get_context(m['channel_id'], m['timestamp'])
-            programa = get_programme_at(d, m['channel_name'] or '', m['timestamp'] or '')
+            programa = _get_programme(m['channel_name'] or '', m['timestamp'] or '')
 
             ws.cell(row=row_num, column=1, value=str(m['timestamp'] or '')[:19])
             ws.cell(row=row_num, column=2, value=m['channel_name'] or '')
@@ -162,10 +213,9 @@ def build_workbook(sheets_data: list[tuple], d, tdb) -> io.BytesIO:
             fill = alt_fill if i % 2 == 0 else None
             for col in range(1, len(headers) + 1):
                 cell = ws.cell(row=row_num, column=col)
-                cell.font      = Font(size=10, name='Calibri')
+                cell.font      = data_font
                 cell.border    = border
-                cell.alignment = Alignment(vertical='top',
-                                           wrap_text=(col in (5, 6)))
+                cell.alignment = align_wrap if col in (5, 6) else align_nowrap
                 if fill:
                     cell.fill = fill
 

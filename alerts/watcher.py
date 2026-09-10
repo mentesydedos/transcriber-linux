@@ -20,7 +20,7 @@ from alerts.mailer         import send_immediate, send_daily_report, send_final_
 from alerts.telegram       import notify_match as tg_notify_match, send_telegram as tg_send_telegram
 from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
 from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
-from alerts.googlenews     import fetch_articles as gnews_fetch
+from alerts.googlenews     import fetch_articles as gnews_fetch, fetch_articles_range
 
 logger = logging.getLogger('watcher')
 
@@ -299,8 +299,21 @@ def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] 
     total = 0
     seen_links  = set()
     seen_titles = set()
+
+    # El RSS de Google Noticias tope en ~100 resultados POR CONSULTA (ver
+    # alerts/googlenews.py:GOOGLE_RSS_CAP), con fuerte sesgo hacia lo más
+    # reciente -- para el fetch histórico de un rango amplio (ej. un mes),
+    # pedir todo el rango de un jalón entierra casi todo lo de semanas
+    # atrás bajo los resultados de los últimos días. fetch_articles_range
+    # bisecta el rango recursivamente solo cuando hace falta (se topó en el
+    # cupo), hasta llegar a un solo día -- ahí sí es el límite duro del
+    # feed (no entiende horas en after:/before:, no hay paginación oficial).
     for kw in keywords:
-        for art in gnews_fetch(kw, date_from=date_from, date_to=date_to):
+        if date_from and date_to and date_from != date_to:
+            articles = fetch_articles_range(kw, date_from, date_to)
+        else:
+            articles = gnews_fetch(kw, date_from=date_from, date_to=date_to)
+        for art in articles:
             title_key = (art['title'], art['source'])
             if art['link'] in seen_links or title_key in seen_titles:
                 continue
