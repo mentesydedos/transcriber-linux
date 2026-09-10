@@ -25,6 +25,7 @@ para que nunca choquen aunque crezca la numeración de radio.
 RADIO_CHANNEL_MIN  = 27
 NEWS_CHANNEL_ID    = 9001
 YOUTUBE_CHANNEL_ID = 9002
+GDELT_CHANNEL_ID   = 9003
 
 # Orden = el que se usa en los checkboxes de "nueva búsqueda".
 MEDIA_TYPES = [
@@ -32,10 +33,11 @@ MEDIA_TYPES = [
     ("radio",   "Radio"),
     ("news",    "Google Noticias"),
     ("youtube", "YouTube"),
+    ("gdelt",   "GDELT (noticias internacionales)"),
 ]
-DEFAULT_MEDIA_TYPES = "tv,radio"  # búsquedas existentes sin media_types guardado -- no incluye "news"
-                                  # ni "youtube" a propósito, para no activar de golpe un fetch externo
-                                  # nuevo en búsquedas ya creadas antes de que existiera esa fuente.
+DEFAULT_MEDIA_TYPES = "tv,radio"  # búsquedas existentes sin media_types guardado -- no incluye "news",
+                                  # "youtube" ni "gdelt" a propósito, para no activar de golpe un fetch
+                                  # externo nuevo en búsquedas ya creadas antes de que existiera esa fuente.
 
 
 def channel_type(channel_id: int) -> str:
@@ -45,6 +47,8 @@ def channel_type(channel_id: int) -> str:
         return "news"
     if channel_id == YOUTUBE_CHANNEL_ID:
         return "youtube"
+    if channel_id == GDELT_CHANNEL_ID:
+        return "gdelt"
     if channel_id >= RADIO_CHANNEL_MIN:
         return "radio"
     return "tv"

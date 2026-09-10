@@ -137,7 +137,11 @@ def fetch_articles_range(query: str, date_from: str, date_to: str) -> list[dict]
     simplemente no están disponibles vía este feed -- límite real del
     RSS público, no de este código."""
     articles = fetch_articles(query, date_from=date_from, date_to=date_to, limit=GOOGLE_RSS_CAP + 1)
-    if len(articles) <= GOOGLE_RSS_CAP or date_from == date_to:
+    # BUG corregido: Google nunca manda más de GOOGLE_RSS_CAP items crudos
+    # (confirmado empíricamente), así que len(articles) jamás pasaba de 100
+    # -- "<= GOOGLE_RSS_CAP" siempre era verdadero y esta función nunca
+    # bisectaba de verdad, se comportaba igual que una sola consulta plana.
+    if len(articles) < GOOGLE_RSS_CAP or date_from == date_to:
         return articles
     d0  = datetime.strptime(date_from, '%Y-%m-%d').date()
     d1  = datetime.strptime(date_to,   '%Y-%m-%d').date()

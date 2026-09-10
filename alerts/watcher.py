@@ -19,8 +19,9 @@ from pathlib  import Path
 from alerts.mailer         import send_immediate, send_daily_report, send_final_report
 from alerts.telegram       import notify_match as tg_notify_match, send_telegram as tg_send_telegram
 from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schema as epg_schema
-from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
+from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID, GDELT_CHANNEL_ID
 from alerts.googlenews     import fetch_articles as gnews_fetch, fetch_articles_range
+from alerts.gdelt          import fetch_articles as gdelt_fetch, fetch_articles_range as gdelt_fetch_range
 
 logger = logging.getLogger('watcher')
 
@@ -29,6 +30,7 @@ ALERTS_DB     = BASE_DIR / 'alerts.db'
 TRANS_DB      = BASE_DIR / 'transcriptions.db'
 POLL_INTERVAL = 5   # segundos entre cada ciclo
 NEWS_POLL_MINUTES  = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
+GDELT_POLL_MINUTES = 30  # ídem para GDELT (fuente opt-in, ver alerts/channel_types.py)
 WEEKLY_REPORT_WEEKDAY = 0  # lunes -- reporta la semana calendario Lun-Dom recién cerrada
 # YouTube Data API v3 tiene cuota diaria limitada (10,000 unidades/día,
 # 100 por búsqueda -- ~100 búsquedas/día en total, compartidas entre TODAS
@@ -275,51 +277,45 @@ def _with_context_chunks(tdb, channel_id: int, timestamp: str, text: str) -> str
 
 
 # ── Google Noticias ───────────────────────────────────────────────────────────
-def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
-                           date_from: str | None = None, date_to: str | None = None) -> int:
-    """Consulta Google Noticias por cada keyword de la búsqueda y guarda los
-    artículos nuevos como matches (channel_id=NEWS_CHANNEL_ID, channel_name=
-    la fuente real del artículo). date_from/date_to acotan (usados solo en
-    el fetch histórico inicial); sin fecha trae lo más reciente, y el índice
-    único de matches (search_id, keyword, channel_id, timestamp) ya evita
-    duplicar un artículo visto en un poll anterior. exclude_words descarta
-    el artículo si su título contiene alguna palabra excluida.
+def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None,
+                               date_from: str | None, date_to: str | None,
+                               fetch_one, fetch_range, channel_id: int) -> int:
+    """Lógica compartida entre Google Noticias y GDELT (ambas fuentes son
+    "keyword -> lista de artículos", ver alerts/googlenews.py y
+    alerts/gdelt.py -- mismo shape de artículo, mismo problema de tope por
+    consulta con sesgo a lo reciente, misma solución de bisección). Guarda
+    los artículos nuevos como matches (channel_name=fuente real del
+    artículo). date_from/date_to acotan (fetch histórico inicial); sin
+    fecha trae lo más reciente. exclude_words descarta el artículo si su
+    título contiene alguna palabra excluida.
 
-    Cada keyword dispara su PROPIA búsqueda en Google (gnews_fetch se llama
+    Cada keyword dispara su PROPIA búsqueda (fetch_one/fetch_range se llama
     una vez por keyword) -- si la búsqueda tiene varias keywords que se
     solapan (ej. "rocha", "rocha moya"), el MISMO artículo real aparece en
-    más de un resultado. Se dedupea por link Y por (título, fuente) --
-    el link de Google Noticias es una URL de redirección ofuscada que puede
-    variar entre una búsqueda y otra para el MISMO artículo real, así que
-    el link solo no basta. A diferencia de TV/radio, aquí no depende de
-    dedup_channel: es siempre el mismo artículo, nunca hay razón legítima
-    de guardarlo dos veces."""
+    más de un resultado. Se dedupea por link Y por (título, fuente) -- el
+    link de estas fuentes puede ser una URL de redirección que varía entre
+    una búsqueda y otra para el MISMO artículo real, así que el link solo
+    no basta. A diferencia de TV/radio, aquí no depende de dedup_channel:
+    es siempre el mismo artículo, nunca hay razón legítima de guardarlo dos
+    veces."""
     phonetic   = bool(s['phonetic'])
     whole_word = bool(s['whole_word'])
     total = 0
     seen_links  = set()
     seen_titles = set()
 
-    # El RSS de Google Noticias tope en ~100 resultados POR CONSULTA (ver
-    # alerts/googlenews.py:GOOGLE_RSS_CAP), con fuerte sesgo hacia lo más
-    # reciente -- para el fetch histórico de un rango amplio (ej. un mes),
-    # pedir todo el rango de un jalón entierra casi todo lo de semanas
-    # atrás bajo los resultados de los últimos días. fetch_articles_range
-    # bisecta el rango recursivamente solo cuando hace falta (se topó en el
-    # cupo), hasta llegar a un solo día -- ahí sí es el límite duro del
-    # feed (no entiende horas en after:/before:, no hay paginación oficial).
     for kw in keywords:
         if date_from and date_to and date_from != date_to:
-            articles = fetch_articles_range(kw, date_from, date_to)
+            articles = fetch_range(kw, date_from, date_to)
         else:
-            articles = gnews_fetch(kw, date_from=date_from, date_to=date_to)
+            articles = fetch_one(kw, date_from=date_from, date_to=date_to)
         for art in articles:
             title_key = (art['title'], art['source'])
             if art['link'] in seen_links or title_key in seen_titles:
                 continue
             # Además de los sets en memoria (dedup dentro de esta corrida),
-            # se checa la base -- un poll anterior (cada NEWS_POLL_MINUTES)
-            # ya pudo haber guardado este mismo artículo bajo otra keyword.
+            # se checa la base -- un poll anterior ya pudo haber guardado
+            # este mismo artículo bajo otra keyword.
             if adb.execute("""SELECT 1 FROM matches
                 WHERE search_id=? AND (source_url=? OR (matched_text=? AND channel_name=?))""",
                 (s['id'], art['link'], art['title'], art['source'])).fetchone():
@@ -334,9 +330,33 @@ def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] 
             cur = adb.execute("""INSERT OR IGNORE INTO matches
                 (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain)
                 VALUES (?,?,?,?,?,?,?,?)""",
-                (s['id'], kw, NEWS_CHANNEL_ID, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
+                (s['id'], kw, channel_id, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
             total += cur.rowcount
     return total
+
+
+def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
+                           date_from: str | None = None, date_to: str | None = None) -> int:
+    """Google Noticias -- ver _poll_articles_for_search. El RSS tope en
+    ~100 resultados por consulta (alerts/googlenews.py:GOOGLE_RSS_CAP), con
+    fuerte sesgo hacia lo más reciente -- para el fetch histórico de un
+    rango amplio (ej. un mes), pedir todo el rango de un jalón entierra
+    casi todo lo de semanas atrás bajo los resultados de los últimos días.
+    fetch_articles_range bisecta el rango recursivamente solo cuando hace
+    falta, hasta llegar a un solo día -- ahí sí es el límite duro del feed
+    (no entiende horas en after:/before:, no hay paginación oficial)."""
+    return _poll_articles_for_search(adb, s, keywords, exclude_words, date_from, date_to,
+                                      gnews_fetch, fetch_articles_range, NEWS_CHANNEL_ID)
+
+
+def _poll_gdelt_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
+                            date_from: str | None = None, date_to: str | None = None) -> int:
+    """GDELT (cobertura internacional, opt-in -- ver alerts/channel_types.py
+    MEDIA_TYPES y alerts/gdelt.py). Mismo mecanismo que Google Noticias,
+    pero con su propio tope (250) y su propio rate limit (1 consulta/5s,
+    ver alerts/gdelt.py:_throttle)."""
+    return _poll_articles_for_search(adb, s, keywords, exclude_words, date_from, date_to,
+                                      gdelt_fetch, gdelt_fetch_range, GDELT_CHANNEL_ID)
 
 
 # ── YouTube ────────────────────────────────────────────────────────────────
@@ -601,6 +621,14 @@ def _process(adb, tdb, smtp, cfg=None):
                 adb.commit()
                 logger.info(f"Búsqueda {sid} '{s['name']}': {n_news} artículos de Google Noticias "
                             f"(histórico {s['date_start']}..{s['date_end']}).")
+            if 'gdelt' in m['media_types']:
+                n_gdelt = _poll_gdelt_for_search(adb, s, m['keywords'], m['exclude_words'],
+                                                  date_from=s['date_start'], date_to=s['date_end'])
+                adb.execute("UPDATE searches SET gdelt_last_fetch=? WHERE id=?",
+                            (now.strftime('%Y-%m-%d %H:%M:%S'), sid))
+                adb.commit()
+                logger.info(f"Búsqueda {sid} '{s['name']}': {n_gdelt} artículos de GDELT "
+                            f"(histórico {s['date_start']}..{s['date_end']}).")
             adb.execute("UPDATE searches SET initialized=1 WHERE id=?", (sid,))
             adb.commit()
             logger.info(f"Búsqueda {sid} '{s['name']}' inicializada: {m['total_hist']} registros históricos revisados.")
@@ -646,6 +674,24 @@ def _process(adb, tdb, smtp, cfg=None):
         adb.commit()
         if n_news:
             logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_news} artículos nuevos de Google Noticias.")
+
+    # 1.6 Re-consultar GDELT para búsquedas activas ya inicializadas -- misma
+    # idea que 1.5, fuente opt-in aparte (ver alerts/channel_types.py).
+    gdelt_due = adb.execute(f"""
+        SELECT * FROM searches
+        WHERE status='active' AND initialized=1
+        AND date_start <= ? AND date_end >= ?
+        AND media_types LIKE '%gdelt%'
+        AND (gdelt_last_fetch IS NULL OR gdelt_last_fetch <= datetime('now','localtime','-{GDELT_POLL_MINUTES} minutes'))
+    """, (today, today)).fetchall()
+    for s in gdelt_due:
+        keywords = json.loads(s['keywords'])
+        exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
+        n_gdelt = _poll_gdelt_for_search(adb, s, keywords, exclude_words)
+        adb.execute("UPDATE searches SET gdelt_last_fetch=? WHERE id=?", (now.strftime('%Y-%m-%d %H:%M:%S'), s['id']))
+        adb.commit()
+        if n_gdelt:
+            logger.info(f"Búsqueda {s['id']} '{s['name']}': {n_gdelt} artículos nuevos de GDELT.")
 
     # 2. Procesar nuevas transcripciones (delta desde último ID)
     last_id = int(_get_setting(adb, 'watcher_last_id', '0'))

@@ -198,7 +198,7 @@
 
   // ── Timeline apilado (Plotly) ──────────────────────────────────────────
   if (timelineData.hours && timelineData.hours.length) {
-    const order = ['tv', 'radio', 'news', 'youtube'];
+    const order = ['tv', 'radio', 'news', 'youtube', 'gdelt'];
     const traces = order.filter(m => timelineData.series[m]).map(m => ({
       x: timelineData.hours, y: timelineData.series[m], name: timelineData.labels[m],
       type: 'scatter', mode: 'lines', stackgroup: 'one',

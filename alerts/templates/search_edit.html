@@ -82,7 +82,7 @@
   <div class="card p-4 mb-3">
     <div class="section-label mb-3">Medios a monitorear</div>
     <div class="d-flex flex-wrap gap-2 mt-select">
-      {% set mt_icons = {'tv': 'bi-tv', 'radio': 'bi-broadcast', 'news': 'bi-newspaper', 'youtube': 'bi-youtube'} %}
+      {% set mt_icons = {'tv': 'bi-tv', 'radio': 'bi-broadcast', 'news': 'bi-newspaper', 'youtube': 'bi-youtube', 'gdelt': 'bi-globe'} %}
       {% for value, label in media_types_choices %}
       <input class="btn-check" type="checkbox" name="media_types" value="{{ value }}"
              id="mt_{{ value }}" autocomplete="off" {{ 'checked' if value in current_media_types }}>

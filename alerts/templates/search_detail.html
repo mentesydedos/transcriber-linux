@@ -442,7 +442,7 @@
                  class="match-thumb" title="Ver snapshot y video (±10s)"
                  onclick="openClip({{ s.id }}, {{ m.id }})"
                  onerror="this.style.visibility='hidden'">
-            {% elif m.channel_kind == 'news' %}
+            {% elif m.channel_kind in ('news', 'gdelt') %}
             <a href="{{ m.source_url }}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">
               {% if m.channel_domain %}
               <img src="https://www.google.com/s2/favicons?domain={{ m.channel_domain }}&sz=64" loading="lazy"
@@ -740,7 +740,7 @@
     const txt      = musicTag + (m.centered_highlighted || esc(m.centered_text || m.matched_text || ''));
     const clipCell = m.channel_kind === 'tv'
       ? `<img src="/searches/{{ s.id }}/matches/${m.id}/snapshot.jpg" loading="lazy" class="match-thumb" title="Ver snapshot y video (±10s)" onclick="openClip({{ s.id }}, ${m.id})" onerror="this.style.visibility='hidden'">`
-      : m.channel_kind === 'news'
+      : (m.channel_kind === 'news' || m.channel_kind === 'gdelt')
       ? `<a href="${esc(m.source_url || '')}" target="_blank" rel="noopener noreferrer" title="Leer artículo original">${
           m.channel_domain
             ? `<img src="https://www.google.com/s2/favicons?domain=${esc(m.channel_domain)}&sz=64" loading="lazy" class="match-thumb match-thumb-favicon" onerror="this.replaceWith(Object.assign(document.createElement('i'), {className:'bi bi-box-arrow-up-right', style:'color:var(--accent)'}))">`

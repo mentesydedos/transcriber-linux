@@ -159,7 +159,7 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     # keyword -- eso descuadraba el orden cronológico frente a TV/radio al
     # combinarse en la misma tabla. Para noticias se usa el timestamp real
     # (la hora de publicación) tal cual, sin ajuste.
-    if md['channel_kind'] == 'news':
+    if md['channel_kind'] in ('news', 'gdelt'):
         idx_chunk = None
         md['precise_timestamp'] = md.get('timestamp')
     else:
@@ -450,6 +450,9 @@ def _init_db():
         # intervalo propio y más largo (YOUTUBE_POLL_MINUTES en watcher.py)
         # porque cada ciclo puede implicar descargar/transcribir video nuevo.
         ('youtube_last_fetch', 'TEXT'),
+        # Igual que news_last_fetch pero para GDELT (alerts/gdelt.py) -- ver
+        # alerts/channel_types.py, fuente internacional opt-in.
+        ('gdelt_last_fetch', 'TEXT'),
         # Si la misma palabra se repite en el mismo canal dentro de 1 minuto
         # (misma nota/segmento), contar solo una coincidencia -- ver
         # alerts/watcher.py _recent_match_exists(). Default 1 (activado) para
@@ -534,16 +537,44 @@ def _init_db():
         conn.commit()
     except Exception:
         pass
-    # Eliminar duplicados antes de crear el índice único
+    # Eliminar duplicados antes de crear el índice único.
+    #
+    # BUG corregido (2026-09-10): el índice original agrupaba solo por
+    # (search_id, keyword, channel_id, timestamp). Eso es correcto para
+    # TV/radio, donde channel_id es un canal real y timestamp es el inicio
+    # del chunk de 30s -- dos filas iguales en esas 4 columnas SÍ son el
+    # mismo evento. Pero Google Noticias/YouTube/GDELT usan un channel_id
+    # CONSTANTE compartido por TODAS las fuentes de ese tipo (ver
+    # alerts/channel_types.py NEWS_CHANNEL_ID/YOUTUBE_CHANNEL_ID/
+    # GDELT_CHANNEL_ID) -- ahí, dos artículos DISTINTOS de dos medios
+    # distintos que casualmente comparten keyword y el mismo timestamp
+    # (segundo exacto de publicación) se veían como "duplicados" y esta
+    # limpieza los borraba de verdad, y el índice único bloqueaba
+    # reinsertarlos después. Como este bloque corre en cada arranque de la
+    # app (_init_db se llama desde create_app()), el problema se repetía en
+    # cada reinicio del servicio, no solo la primera vez -- así fue como un
+    # histórico de Google Noticias que había recuperado 749 artículos
+    # terminó en 76 tras varios reinicios.
+    #
+    # Fix: agregar COALESCE(source_url,'') al agrupamiento/índice.
+    # source_url es NULL para TV/radio siempre -- COALESCE los deja a
+    # TODOS con el mismo '' , así que entre ellos el comportamiento de
+    # dedup no cambia (sigue dependiendo solo de las 4 columnas de
+    # siempre). Para Noticias/YouTube/GDELT, cada artículo real tiene su
+    # propio source_url, así que ahora sí se distinguen aunque compartan
+    # keyword+timestamp. (No se puede usar source_url tal cual sin
+    # COALESCE: SQL trata cada NULL como distinto de cualquier otro NULL,
+    # lo que habría anulado por completo el dedup de TV/radio.)
     conn.execute("""
         DELETE FROM matches WHERE id NOT IN (
             SELECT MIN(id) FROM matches
-            GROUP BY search_id, keyword, channel_id, timestamp
+            GROUP BY search_id, keyword, channel_id, timestamp, COALESCE(source_url, '')
         )
     """)
+    conn.execute("DROP INDEX IF EXISTS idx_m_unique")
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_m_unique
-        ON matches(search_id, keyword, channel_id, timestamp)
+        ON matches(search_id, keyword, channel_id, timestamp, COALESCE(source_url, ''))
     """)
     conn.commit()
     conn.commit()
@@ -947,7 +978,7 @@ def create_app() -> Flask:
 
     def _match_where(sid, kws, chs, pfs, mts, date_from, date_to):
         """Construye WHERE + params para la tabla matches con todos los filtros activos.
-        mts: subconjunto de {'tv','radio','news','youtube'} -- channel_kind no es una
+        mts: subconjunto de {'tv','radio','news','youtube','gdelt'} -- channel_kind no es una
         columna real (se deriva de channel_id, ver alerts/channel_types.py), así que se
         arma el mismo rango/valor por SQL en vez de re-consultar fila por fila."""
         conds, params = ['search_id=?'], [sid]
@@ -958,16 +989,18 @@ def create_app() -> Flask:
             conds.append(f"channel_name IN ({','.join('?'*len(chs))})")
             params.extend(chs)
         if mts:
-            from alerts.channel_types import RADIO_CHANNEL_MIN, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID
+            from alerts.channel_types import RADIO_CHANNEL_MIN, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID, GDELT_CHANNEL_ID
             mt_conds = []
             if 'tv' in mts:
                 mt_conds.append(f"(channel_id IS NULL OR channel_id < {RADIO_CHANNEL_MIN})")
             if 'radio' in mts:
-                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id != {NEWS_CHANNEL_ID} AND channel_id != {YOUTUBE_CHANNEL_ID})")
+                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id NOT IN ({NEWS_CHANNEL_ID}, {YOUTUBE_CHANNEL_ID}, {GDELT_CHANNEL_ID}))")
             if 'news' in mts:
                 mt_conds.append(f"channel_id = {NEWS_CHANNEL_ID}")
             if 'youtube' in mts:
                 mt_conds.append(f"channel_id = {YOUTUBE_CHANNEL_ID}")
+            if 'gdelt' in mts:
+                mt_conds.append(f"channel_id = {GDELT_CHANNEL_ID}")
             if mt_conds:
                 conds.append('(' + ' OR '.join(mt_conds) + ')')
         if date_from:

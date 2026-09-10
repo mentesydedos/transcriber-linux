@@ -28,14 +28,17 @@ MEDIA_COLORS = {
     'radio':   '#10b981',  # green
     'news':    '#f59e0b',  # amber
     'youtube': '#ef4444',  # red
+    'gdelt':   '#8b5cf6',  # violeta -- distinto de 'news' para diferenciarlo a simple vista
 }
 MEDIA_SHAPES = {
     'tv':      'dot',
     'radio':   'square',
     'news':    'triangle',
     'youtube': 'star',
+    'gdelt':   'diamond',
 }
-MEDIA_LABELS = {'tv': 'TV', 'radio': 'Radio', 'news': 'Prensa/Noticias', 'youtube': 'YouTube'}
+MEDIA_LABELS = {'tv': 'TV', 'radio': 'Radio', 'news': 'Prensa/Noticias', 'youtube': 'YouTube',
+                'gdelt': 'GDELT (Internacional)'}
 
 # Paleta de comunidades -- distinguible en fondo oscuro y claro, evita rojo/
 # verde puros (ya son semánticos en el resto del dashboard: verde=activo,
@@ -199,7 +202,7 @@ def build_sankey(rows, top_channels_per_medium: int = 6) -> dict:
             other_totals[kind] += cnt
 
     keywords = sorted({kw for kw, _ in kw_medium})
-    media    = [m for m in ('tv', 'radio', 'news', 'youtube') if any(k == m for _, k in kw_medium)]
+    media    = [m for m in ('tv', 'radio', 'news', 'youtube', 'gdelt') if any(k == m for _, k in kw_medium)]
     channels = sorted(kept_channels)
 
     labels, colors = [], []
@@ -240,7 +243,7 @@ def build_stream_timeline(rows) -> dict:
         buckets[key][channel_type(r['channel_id'])] += 1
 
     hours = sorted(buckets.keys())
-    media = ['tv', 'radio', 'news', 'youtube']
+    media = ['tv', 'radio', 'news', 'youtube', 'gdelt']
     series = {m: [buckets[h].get(m, 0) for h in hours] for m in media}
     return {
         'hours': hours, 'series': series,

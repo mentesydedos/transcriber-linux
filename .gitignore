@@ -30,6 +30,10 @@ local.m3u
 # Cache de snapshots/clips de video generados on-demand
 alerts/cache/
 
+# Reportes .xlsx generados por /export en segundo plano (ver
+# alerts/app.py:_run_export_job) -- salida efímera, no código.
+export_files/
+
 # Descargas parciales de YouTube en curso
 tmp_youtube/
 
