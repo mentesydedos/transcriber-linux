@@ -100,7 +100,17 @@ def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) ->
     palabra (no dentro de una palabra compuesta, ej. "día" no debe casar con
     "diálogo" ni "mediodía"). Se comprueba con límites \\w sobre el mismo
     texto normalizado en ambos lados (keyword y texto), así que es seguro
-    aunque la normalización fonética cambie longitudes de palabra."""
+    aunque la normalización fonética cambie longitudes de palabra.
+
+    keyword puede ser compuesta -- varios términos unidos con "+" (ej.
+    "homicidio+juan") que deben aparecer TODOS en el mismo texto, en
+    cualquier orden y sin necesidad de estar juntos -- a diferencia de una
+    keyword normal de varias palabras ("claudia sheinbaum"), que sí exige
+    la frase exacta. Cada término se evalúa por separado con las mismas
+    reglas (phonetic/whole_word) y se exige que TODOS matcheen."""
+    if '+' in keyword:
+        terms = [t.strip() for t in keyword.split('+') if t.strip()]
+        return bool(terms) and all(_match(text, t, phonetic, whole_word) for t in terms)
     norm_text = _phonetic_es(text)    if phonetic else _strip_accents(text)
     norm_kw   = _phonetic_es(keyword) if phonetic else _strip_accents(keyword)
     if not norm_kw:

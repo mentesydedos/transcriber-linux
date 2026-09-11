@@ -30,28 +30,33 @@ def _bold_kw(text, keyword, phonetic=False, whole_word=False):
     Modo exacto: case-insensitive. Modo fonético: resalta cada palabra
     del texto que sea fonéticamente equivalente al keyword. En modo
     whole_word exige límites de palabra (no resalta "día" dentro de
-    "diálogo")."""
+    "diálogo").
+
+    keyword puede ser compuesta -- varios términos unidos con "+" (ver
+    alerts/watcher.py:_match) que deben aparecer TODOS en el texto pero no
+    necesariamente juntos -- aquí se resalta cada término por separado."""
     if not text or not keyword:
         return text or ''
     from alerts.app import _phonetic  # import diferido -- evita import circular a nivel de módulo
     bold = InlineFont(b=True, color='1D4ED8')
+    terms = [t.strip() for t in keyword.split('+') if t.strip()] or [keyword]
     parts, last = [], 0
     if phonetic:
-        ph_kw   = _phonetic(keyword)
-        pattern = re.compile(r'(?<!\w)' + re.escape(ph_kw) + r'(?!\w)') if whole_word else None
+        ph_kws  = [_phonetic(t) for t in terms]
+        pattern = re.compile('|'.join(r'(?<!\w)' + re.escape(p) + r'(?!\w)' for p in ph_kws)) if whole_word else None
         for m in re.finditer(r'\S+', text):
             word    = m.group()
             word_ph = _phonetic(word)
-            matched = bool(pattern.search(word_ph)) if whole_word else (ph_kw in word_ph)
+            matched = bool(pattern.search(word_ph)) if whole_word else any(p in word_ph for p in ph_kws)
             if matched:
                 if m.start() > last:
                     parts.append(text[last:m.start()])
                 parts.append(TextBlock(bold, word))
                 last = m.end()
     else:
-        kw_pattern = re.escape(keyword)
+        kw_pattern = '|'.join(re.escape(t) for t in terms)
         if whole_word:
-            kw_pattern = r'(?<!\w)' + kw_pattern + r'(?!\w)'
+            kw_pattern = r'(?<!\w)(?:' + kw_pattern + r')(?!\w)'
         for m in re.compile(kw_pattern, re.IGNORECASE).finditer(text):
             if m.start() > last:
                 parts.append(text[last:m.start()])

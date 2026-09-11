@@ -63,6 +63,14 @@ def _locate_keyword(text, keyword, phonetic=False, whole_word=False):
     n = len(words)
     if n == 0:
         return None, 0
+    if '+' in keyword:
+        # Keyword compuesta (ver alerts/watcher.py:_match) -- no hay una
+        # sola posición "correcta" para centrar (los términos pueden estar
+        # lejos entre sí), así que se centra en el que aparezca primero.
+        terms = [t.strip() for t in keyword.split('+') if t.strip()]
+        found = [_locate_keyword(text, t, phonetic, whole_word)[0] for t in terms]
+        found = [i for i in found if i is not None]
+        return (min(found), n) if found else (None, n)
     norm     = _phonetic if phonetic else _strip_acc
     kw_words = [norm(w) for w in keyword.split()]
     k = len(kw_words)
@@ -204,36 +212,47 @@ def _highlight(text, keyword, phonetic=False, whole_word=False):
     Usa comparación sin acentos/mayúsculas; en modo fonético detecta
     palabras fonéticamente equivalentes aunque se escriban diferente.
     En modo whole_word exige límites de palabra (\\w) alrededor de la
-    keyword, para no resaltar "día" dentro de "diálogo"."""
+    keyword, para no resaltar "día" dentro de "diálogo".
+
+    keyword puede ser compuesta -- varios términos unidos con "+" que deben
+    aparecer TODOS en el texto pero no necesariamente juntos ni en orden
+    (ver _match) -- ej. "homicidio+juan". Aquí se resalta cada término por
+    separado (dondequiera que aparezca), no la cadena "homicidio+juan"
+    literal."""
     if not text or not keyword:
         return Markup(html_escape(text or ''))
     text, keyword = str(text), str(keyword)
+    terms = [t.strip() for t in keyword.split('+') if t.strip()] or [keyword]
     if phonetic:
-        # kw_words: una entrada por palabra de la keyword (puede ser una frase
-        # de varias palabras, ej. "Nuevo Pantene Molecular Bond Repair") --
-        # antes esto comparaba la fonética de la FRASE COMPLETA contra la de
-        # cada palabra suelta del texto, lo cual nunca podía coincidir salvo
-        # que la keyword fuera de una sola palabra. Ahora se desliza una
-        # ventana de k palabras consecutivas, igual que _locate_keyword.
-        kw_words = [_phonetic(w) for w in keyword.split()]
-        k = len(kw_words)
+        # kw_words_list: una lista de palabras fonéticas POR TÉRMINO (cada
+        # término puede ser una frase de varias palabras, ej. "Nuevo Pantene
+        # Molecular Bond Repair") -- antes esto comparaba la fonética de la
+        # FRASE COMPLETA contra la de cada palabra suelta del texto, lo cual
+        # nunca podía coincidir salvo que la keyword fuera de una sola
+        # palabra. Ahora se desliza una ventana de k palabras consecutivas,
+        # igual que _locate_keyword, una vez por cada término.
         parts = re.split(r'(\s+)', text)
         word_pos = [i for i, p in enumerate(parts) if p.strip()]
         marked = [False] * len(word_pos)
-        for start in range(len(word_pos) - k + 1):
-            ok = True
-            for j in range(k):
-                w_ph = _phonetic(parts[word_pos[start + j]])
-                if whole_word:
-                    if not re.search(r'(?<!\w)' + re.escape(kw_words[j]) + r'(?!\w)', w_ph):
+        for term in terms:
+            kw_words = [_phonetic(w) for w in term.split()]
+            k = len(kw_words)
+            if k == 0 or k > len(word_pos):
+                continue
+            for start in range(len(word_pos) - k + 1):
+                ok = True
+                for j in range(k):
+                    w_ph = _phonetic(parts[word_pos[start + j]])
+                    if whole_word:
+                        if not re.search(r'(?<!\w)' + re.escape(kw_words[j]) + r'(?!\w)', w_ph):
+                            ok = False
+                            break
+                    elif kw_words[j] not in w_ph:
                         ok = False
                         break
-                elif kw_words[j] not in w_ph:
-                    ok = False
-                    break
-            if ok:
-                for j in range(k):
-                    marked[start + j] = True
+                if ok:
+                    for j in range(k):
+                        marked[start + j] = True
         out = []
         wi = 0
         for p in parts:
@@ -246,12 +265,16 @@ def _highlight(text, keyword, phonetic=False, whole_word=False):
                 out.append(str(html_escape(p)))
             wi += 1
         return Markup(''.join(out))
-    # Búsqueda exacta sin acentos/mayúsculas: regex case-insensitive sobre texto escapeado
+    # Búsqueda exacta sin acentos/mayúsculas: regex case-insensitive sobre
+    # texto escapeado -- un solo término, o la alternancia de todos los
+    # términos de una keyword compuesta, en una sola pasada (para no volver
+    # a escapar/marcar HTML ya resaltado en pasadas sucesivas).
     esc_text = str(html_escape(text))
-    esc_kw   = re.escape(str(html_escape(keyword)))
-    pattern  = (r'(?<!\w)' if whole_word else '') + esc_kw + (r'(?!\w)' if whole_word else '')
-    result   = re.sub(pattern, lambda m: f'<mark>{m.group()}</mark>',
-                      esc_text, flags=re.IGNORECASE)
+    esc_terms = [re.escape(str(html_escape(t))) for t in terms]
+    alt = '|'.join(esc_terms)
+    pattern = ((r'(?<!\w)(?:' + alt + r')(?!\w)') if whole_word else alt)
+    result = re.sub(pattern, lambda m: f'<mark>{m.group()}</mark>',
+                     esc_text, flags=re.IGNORECASE)
     return Markup(result)
 
 

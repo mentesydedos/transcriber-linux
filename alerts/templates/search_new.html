@@ -55,6 +55,26 @@
                 placeholder="presidente&#10;economía&#10;terremoto" required></textarea>
     </div>
 
+    <!-- Búsqueda compuesta: junta 2+ palabras con "+" -- ver alerts/watcher.py
+         _match, que exige que TODAS aparezcan en el mismo fragmento, en
+         cualquier orden, sin necesidad de estar juntas. Solo arma el texto
+         y lo agrega como una línea más al textarea de arriba -- el backend
+         no necesita saber nada de esto, ya separa por línea/coma. -->
+    <div class="mb-3 p-3 rounded" style="background:var(--card2);border:1px solid var(--border)">
+      <label class="form-label mb-2">
+        Búsqueda compuesta <span style="color:var(--muted)">(opcional — todas las palabras deben
+        aparecer en el mismo fragmento, sin importar el orden)</span>
+      </label>
+      <div id="compound-words" class="d-flex flex-column gap-2 mb-2">
+        <input type="text" class="form-control form-control-sm compound-word-input" placeholder="Palabra 1, ej. homicidio">
+        <input type="text" class="form-control form-control-sm compound-word-input" placeholder="Palabra 2, ej. juan">
+      </div>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-add-compound-word">+ Otra palabra</button>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-add-compound-entry">Agregar a la lista</button>
+      </div>
+    </div>
+
     <div class="mb-1">
       <label class="form-label">
         Excluir estas palabras <span style="color:var(--muted)">(opcional)</span>
@@ -303,6 +323,28 @@ document.getElementById('search-new-form').addEventListener('submit', function (
   const btn = document.getElementById('submit-btn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Creando…';
+});
+
+document.getElementById('btn-add-compound-word').addEventListener('click', function () {
+  const container = document.getElementById('compound-words');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'form-control form-control-sm compound-word-input';
+  input.placeholder = 'Palabra ' + (container.children.length + 1);
+  container.appendChild(input);
+});
+
+document.getElementById('btn-add-compound-entry').addEventListener('click', function () {
+  const inputs = Array.from(document.querySelectorAll('.compound-word-input'));
+  const words  = inputs.map(i => i.value.trim()).filter(Boolean);
+  if (words.length < 2) {
+    alert('Escribe al menos 2 palabras para una búsqueda compuesta.');
+    return;
+  }
+  const textarea = document.querySelector('textarea[name="keywords"]');
+  const line = words.join('+');
+  textarea.value = textarea.value.trim() ? textarea.value.trim() + '\n' + line : line;
+  inputs.forEach(i => i.value = '');
 });
 </script>
 
