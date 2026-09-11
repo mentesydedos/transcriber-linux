@@ -327,10 +327,14 @@ def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[s
             seen_links.add(art['link'])
             seen_titles.add(title_key)
             ts = art['published'].strftime('%Y-%m-%d %H:%M:%S')
+            # GDELT trae su propio channel_id por artículo (nacional/
+            # internacional, ver alerts/gdelt.py) -- Google Noticias no lo
+            # trae, así que cae al channel_id fijo de siempre.
+            art_channel_id = art.get('channel_id', channel_id)
             cur = adb.execute("""INSERT OR IGNORE INTO matches
                 (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain)
                 VALUES (?,?,?,?,?,?,?,?)""",
-                (s['id'], kw, channel_id, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
+                (s['id'], kw, art_channel_id, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
             total += cur.rowcount
     return total
 

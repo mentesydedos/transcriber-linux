@@ -159,7 +159,7 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     # keyword -- eso descuadraba el orden cronológico frente a TV/radio al
     # combinarse en la misma tabla. Para noticias se usa el timestamp real
     # (la hora de publicación) tal cual, sin ajuste.
-    if md['channel_kind'] in ('news', 'gdelt'):
+    if md['channel_kind'] in ('news', 'gdelt', 'gdelt_mx'):
         idx_chunk = None
         md['precise_timestamp'] = md.get('timestamp')
     else:
@@ -989,18 +989,32 @@ def create_app() -> Flask:
             conds.append(f"channel_name IN ({','.join('?'*len(chs))})")
             params.extend(chs)
         if mts:
-            from alerts.channel_types import RADIO_CHANNEL_MIN, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID, GDELT_CHANNEL_ID
+            from alerts.channel_types import (RADIO_CHANNEL_MIN, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID,
+                                               GDELT_CHANNEL_ID, GDELT_MX_CHANNEL_ID)
             mt_conds = []
             if 'tv' in mts:
                 mt_conds.append(f"(channel_id IS NULL OR channel_id < {RADIO_CHANNEL_MIN})")
             if 'radio' in mts:
-                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id NOT IN ({NEWS_CHANNEL_ID}, {YOUTUBE_CHANNEL_ID}, {GDELT_CHANNEL_ID}))")
+                mt_conds.append(f"(channel_id >= {RADIO_CHANNEL_MIN} AND channel_id NOT IN "
+                                 f"({NEWS_CHANNEL_ID}, {YOUTUBE_CHANNEL_ID}, {GDELT_CHANNEL_ID}, {GDELT_MX_CHANNEL_ID}))")
             if 'news' in mts:
                 mt_conds.append(f"channel_id = {NEWS_CHANNEL_ID}")
             if 'youtube' in mts:
                 mt_conds.append(f"channel_id = {YOUTUBE_CHANNEL_ID}")
             if 'gdelt' in mts:
                 mt_conds.append(f"channel_id = {GDELT_CHANNEL_ID}")
+            if 'gdelt_mx' in mts:
+                mt_conds.append(f"channel_id = {GDELT_MX_CHANNEL_ID}")
+            if 'gdelt_serious' in mts:
+                # Filtro OPCIONAL sobre lo ya guardado (no se aplica al
+                # traer los datos, ver alerts/gdelt.py) -- deja ver solo
+                # los medios internacionales de referencia cuando conviene,
+                # sin perder el resto (África/Asia hablando de México,
+                # etc.) que se guardó de todos modos.
+                from alerts.gdelt import SERIOUS_DOMAINS
+                placeholders = ','.join('?' * len(SERIOUS_DOMAINS))
+                mt_conds.append(f"(channel_id = {GDELT_CHANNEL_ID} AND channel_name IN ({placeholders}))")
+                params.extend(SERIOUS_DOMAINS)
             if mt_conds:
                 conds.append('(' + ' OR '.join(mt_conds) + ')')
         if date_from:
@@ -1060,9 +1074,14 @@ def create_app() -> Flask:
         # Solo los medios que esta búsqueda realmente cubre (s.media_types) --
         # mostrar "YouTube" como filtro en una búsqueda que nunca lo monitorea
         # daría un filtro que siempre vacía la tabla.
-        from alerts.channel_types import MEDIA_TYPES, parse_media_types
+        from alerts.channel_types import MEDIA_TYPES, MEDIA_TYPE_SUBFILTERS, parse_media_types
         _search_mts = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
         mt_all = [{'value': v, 'label': l} for v, l in MEDIA_TYPES if v in _search_mts]
+        # "gdelt_mx" no es un media_type que se guarde en la búsqueda (ver
+        # MEDIA_TYPE_SUBFILTERS) -- es la contraparte nacional de "gdelt",
+        # así que aparece como filtro extra siempre que gdelt esté activo.
+        if 'gdelt' in _search_mts:
+            mt_all += [{'value': v, 'label': l} for v, l in MEDIA_TYPE_SUBFILTERS]
         prog_all = d.execute("""
             SELECT DISTINCT e.title
             FROM matches m

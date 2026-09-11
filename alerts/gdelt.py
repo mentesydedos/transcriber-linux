@@ -1,15 +1,18 @@
 """
 alerts/gdelt.py — Búsqueda de noticias vía GDELT Project (DOC 2.0 API,
 https://api.gdeltproject.org/api/v2/doc/doc), sin API key. Complementa a
-alerts/googlenews.py con cobertura internacional -- en pruebas reales, sin
-ningún filtro, GDELT devolvía de todo (blogs/agregadores irrelevantes
-mezclados con lo relevante), así que se acota a:
-- idioma: solo inglés/español (ver LANGUAGE_FILTER).
-- fuente: la prensa mexicana pasa siempre tal cual (es cobertura nacional
-  legítima que se quiere conservar); para todo lo demás, solo agencias/
-  prensa internacional de referencia (ver SERIOUS_DOMAINS, _is_mexican).
-Es una fuente opt-in aparte ("gdelt" en media_types, ver
-alerts/channel_types.py), no un reemplazo de Google Noticias.
+alerts/googlenews.py con cobertura internacional. Se acota solo por idioma
+(inglés/español, ver LANGUAGE_FILTER) -- NO se restringe por fuente al
+guardar: se probó limitar a medios "serios" (SERIOUS_DOMAINS) desde el
+fetch, pero eso también tapaba cobertura real que puede ser valiosa (ej.
+medios de África/Asia hablando de México). En vez de eso, cada artículo se
+guarda con su channel_id según sea nacional/internacional (ver
+GDELT_CHANNEL_ID/GDELT_MX_CHANNEL_ID en alerts/channel_types.py), y
+SERIOUS_DOMAINS queda disponible como filtro OPCIONAL sobre los resultados
+ya guardados (ver alerts/channel_types.py MEDIA_TYPE_SUBFILTERS
+"gdelt_serious" y alerts/app.py:_match_where) -- lo activas cuando te
+conviene, sin perder lo demás. Es una fuente opt-in aparte ("gdelt" en
+media_types), no un reemplazo de Google Noticias.
 
 Mismo problema de fondo que Google Noticias -- el endpoint tiene un tope de
 resultados por consulta (250, mayor al de Google pero real) -- y misma
@@ -31,6 +34,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from alerts.channel_types import GDELT_CHANNEL_ID, GDELT_MX_CHANNEL_ID
+
 logger = logging.getLogger('gdelt')
 
 DOC_API_URL    = 'https://api.gdeltproject.org/api/v2/doc/doc'
@@ -38,21 +43,16 @@ TIMEOUT        = 20
 GDELT_CAP      = 250   # tope real observado del endpoint por consulta
 _RATE_LIMIT_SEC = 5.0  # GDELT pide max 1 consulta cada 5s (429 si se excede)
 
-# Sin filtro, GDELT es un índice global sin curar -- una prueba real con
-# "sheinbaum méxico" trajo de todo (grenadachronicle.com, businessghana.com,
-# blogs agregadores) mezclado con lo relevante. Se acota a:
-# 1) idioma: solo inglés/español (sourcelang:) -- los dos que puede leer
-#    quien revisa el reporte. Esto SÍ va en la consulta a GDELT.
-# 2) fuente: para medios NO mexicanos, solo agencias/prensa internacional de
-#    referencia (SERIOUS_DOMAINS) -- evita basura de blogs/agregadores
-#    random que GDELT indexa. La prensa mexicana (record.com.mx,
-#    sdpnoticias.com, etc.) NO se restringe a esta lista -- son cobertura
-#    nacional legítima que se quiere conservar tal cual, y muchos medios
-#    mexicanos reales no tienen dominio .mx (ej. sdpnoticias.com), así que
-#    esto se filtra DESPUÉS de la consulta (ver _is_mexican), no con
-#    domainis: en la query -- si se pusiera ahí, excluiría por igual a
-#    medios mexicanos serios y a los que no están en la lista.
+# Idioma: solo inglés/español (sourcelang:) -- los dos que puede leer quien
+# revisa el reporte. Esto SÍ va en la consulta a GDELT.
 LANGUAGE_FILTER = '(sourcelang:english OR sourcelang:spanish)'
+
+# Lista de medios/agencias internacionales de referencia -- NO se usa para
+# excluir nada al guardar (ver docstring del módulo), solo como filtro
+# opcional "gdelt_serious" sobre resultados ya guardados (alerts/app.py:
+# _match_where). No incluye prensa mexicana a propósito: ese filtro nunca
+# aplica a lo clasificado como nacional (ver GDELT_MX_CHANNEL_ID), que
+# siempre se puede ver completo sin restricción de lista.
 SERIOUS_DOMAINS = {
     # Agencias de noticias
     'reuters.com', 'apnews.com', 'efe.com', 'afp.com',
@@ -150,11 +150,13 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
         seen  = art.get('seendate') or ''  # formato YYYYMMDDTHHMMSSZ (UTC)
         if not title or not link or not seen:
             continue
-        # Cobertura mexicana pasa siempre (por eso no va domainis: en la
-        # query); para todo lo demás, solo medios internacionales de
-        # referencia -- ver SERIOUS_DOMAINS y _is_mexican arriba.
-        if not _is_mexican(art) and domain not in SERIOUS_DOMAINS:
-            continue
+        # No se descarta nada por dominio aquí -- se probó restringir a
+        # SERIOUS_DOMAINS en el fetch, pero eso también tapaba cobertura
+        # real y a veces interesante (ej. medios de África/Asia hablando de
+        # México) que vale la pena conservar. SERIOUS_DOMAINS se usa como
+        # filtro OPCIONAL sobre datos ya guardados (ver
+        # alerts/channel_types.py MEDIA_TYPE_SUBFILTERS "gdelt_serious" y
+        # alerts/app.py:_match_where), no como recorte al guardar.
         try:
             # 'Z' = UTC -- sin convertir a hora local quedaba ~6h adelantado
             # frente a TV/radio/Google Noticias (que sí lo hacen, ver
@@ -170,6 +172,11 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
             'source':        domain or 'GDELT',
             'source_domain': domain,
             'published':     pub_dt,
+            # channel_id explícito (no el default que use el caller) --
+            # separa nacional/internacional para poder filtrarlos aparte en
+            # los resultados (ver alerts/watcher.py:_poll_articles_for_search
+            # y alerts/channel_types.py MEDIA_TYPE_SUBFILTERS).
+            'channel_id':    GDELT_MX_CHANNEL_ID if _is_mexican(art) else GDELT_CHANNEL_ID,
         })
     return out
 

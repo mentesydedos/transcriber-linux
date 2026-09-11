@@ -25,7 +25,8 @@ para que nunca choquen aunque crezca la numeración de radio.
 RADIO_CHANNEL_MIN  = 27
 NEWS_CHANNEL_ID    = 9001
 YOUTUBE_CHANNEL_ID = 9002
-GDELT_CHANNEL_ID   = 9003
+GDELT_CHANNEL_ID    = 9003  # GDELT, artículo clasificado como NO mexicano (ver alerts/gdelt.py:_is_mexican)
+GDELT_MX_CHANNEL_ID = 9004  # GDELT, artículo clasificado como mexicano
 
 # Orden = el que se usa en los checkboxes de "nueva búsqueda".
 MEDIA_TYPES = [
@@ -33,7 +34,15 @@ MEDIA_TYPES = [
     ("radio",   "Radio"),
     ("news",    "Google Noticias"),
     ("youtube", "YouTube"),
-    ("gdelt",   "GDELT (noticias internacionales)"),
+    ("gdelt",   "GDELT (internacional)"),
+]
+# Ninguno de estos es un checkbox de "nueva búsqueda" -- son subcategorías
+# de "gdelt" (misma consulta, filtradas/clasificadas después, ver
+# alerts/gdelt.py). Solo sirven para FILTRAR resultados ya obtenidos en
+# search_detail (ver app.py: mt_all), no para decidir qué se monitorea.
+MEDIA_TYPE_SUBFILTERS = [
+    ("gdelt_mx",      "GDELT (nacional)"),
+    ("gdelt_serious", "GDELT (medios reconocidos)"),
 ]
 DEFAULT_MEDIA_TYPES = "tv,radio"  # búsquedas existentes sin media_types guardado -- no incluye "news",
                                   # "youtube" ni "gdelt" a propósito, para no activar de golpe un fetch
@@ -49,6 +58,8 @@ def channel_type(channel_id: int) -> str:
         return "youtube"
     if channel_id == GDELT_CHANNEL_ID:
         return "gdelt"
+    if channel_id == GDELT_MX_CHANNEL_ID:
+        return "gdelt_mx"
     if channel_id >= RADIO_CHANNEL_MIN:
         return "radio"
     return "tv"
