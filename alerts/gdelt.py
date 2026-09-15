@@ -55,12 +55,21 @@ LANGUAGE_FILTER = '(sourcelang:english OR sourcelang:spanish)'
 # siempre se puede ver completo sin restricción de lista.
 SERIOUS_DOMAINS = {
     # Agencias de noticias
-    'reuters.com', 'apnews.com', 'efe.com', 'afp.com',
+    'reuters.com', 'apnews.com', 'efe.com', 'afp.com', 'xinhuanet.com',
+    'tass.com', 'ansa.it', 'dpa-international.com', 'kyodonews.net',
+    'upi.com',
     # Prensa internacional en inglés
     'bbc.com', 'aljazeera.com', 'theguardian.com', 'nytimes.com',
-    'washingtonpost.com', 'ft.com', 'economist.com',
-    # Prensa internacional en español / bilingüe
-    'dw.com', 'france24.com', 'elpais.com', 'infobae.com',
+    'washingtonpost.com', 'ft.com', 'economist.com', 'cnn.com',
+    'bloomberg.com', 'wsj.com', 'npr.org', 'time.com', 'newsweek.com',
+    'usatoday.com', 'independent.co.uk', 'telegraph.co.uk',
+    # Prensa internacional en español / bilingüe (no mexicana -- lo
+    # mexicano ya cae en "nacional", ver GDELT_MX_CHANNEL_ID)
+    'dw.com', 'france24.com', 'elpais.com', 'infobae.com', 'elmundo.es',
+    'abc.es', 'lavanguardia.com', 'elperiodico.com',
+    'lanacion.com.ar', 'clarin.com',
+    'latercera.com', 'emol.com',
+    'eltiempo.com', 'elespectador.com', 'elcomercio.pe', 'elpais.com.uy',
 }
 
 

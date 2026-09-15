@@ -34,15 +34,15 @@ MEDIA_TYPES = [
     ("radio",   "Radio"),
     ("news",    "Google Noticias"),
     ("youtube", "YouTube"),
-    ("gdelt",   "GDELT (internacional)"),
+    ("gdelt",   "Búsqueda global (internacional)"),
 ]
 # Ninguno de estos es un checkbox de "nueva búsqueda" -- son subcategorías
 # de "gdelt" (misma consulta, filtradas/clasificadas después, ver
 # alerts/gdelt.py). Solo sirven para FILTRAR resultados ya obtenidos en
 # search_detail (ver app.py: mt_all), no para decidir qué se monitorea.
 MEDIA_TYPE_SUBFILTERS = [
-    ("gdelt_mx",      "GDELT (nacional)"),
-    ("gdelt_serious", "GDELT (medios reconocidos)"),
+    ("gdelt_mx",      "Búsqueda global (nacional)"),
+    ("gdelt_serious", "Búsqueda global (medios reconocidos)"),
 ]
 DEFAULT_MEDIA_TYPES = "tv,radio"  # búsquedas existentes sin media_types guardado -- no incluye "news",
                                   # "youtube" ni "gdelt" a propósito, para no activar de golpe un fetch

@@ -1,0 +1,186 @@
+{% extends 'base.html' %}
+{% block title %}Pulso del mundo — AlertaTV{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+  <div>
+    <div class="d-flex align-items-center gap-2 mb-1">
+      <i class="bi bi-activity" style="color:#8b5cf6"></i>
+      <h4 class="mb-0 fw-bold">Pulso del mundo</h4>
+    </div>
+    <p style="color:var(--text2);font-size:.85rem;margin:0">
+      Personas, organizaciones y lugares que más aparecen hoy en la cobertura noticiosa global —
+      independiente de cualquier búsqueda, tomado directo del Global Knowledge Graph.
+    </p>
+  </div>
+  <div class="d-flex gap-1">
+    <a href="/pulso?scope=world" class="btn btn-sm {{ 'btn-primary' if scope == 'world' else 'btn-outline-secondary' }}">
+      <i class="bi bi-globe-americas me-1"></i>Mundo
+    </a>
+    <a href="/pulso?scope=mx" class="btn btn-sm {{ 'btn-primary' if scope == 'mx' else 'btn-outline-secondary' }}">
+      <i class="bi bi-flag me-1"></i>México
+    </a>
+  </div>
+</div>
+
+{% if not pulse.available %}
+<div class="card p-4 text-center" style="color:var(--muted)">
+  Esta sección necesita credenciales de BigQuery configuradas.
+  <a href="/settings">Configúralas en /settings</a> ("Búsqueda global vía BigQuery").
+</div>
+{% else %}
+
+<div class="d-flex flex-wrap gap-2 mb-3" style="font-size:.78rem;color:var(--muted)">
+  <span class="px-2 py-1 rounded" style="background:var(--card2);border:1px solid var(--border)">
+    <i class="bi bi-calendar-date me-1"></i>{{ pulse.day }}
+  </span>
+  {% if pulse.computed_at %}
+  <span class="px-2 py-1 rounded" style="background:var(--card2);border:1px solid var(--border)">
+    <i class="bi bi-arrow-repeat me-1"></i>Última actualización: {{ pulse.computed_at }} · próxima: {{ pulse.next_update }}
+  </span>
+  {% endif %}
+  {% if pulse.tone.avg is not none %}
+  <span class="px-2 py-1 rounded" style="background:var(--card2);border:1px solid var(--border);color:{{ '#ef4444' if pulse.tone.avg < 0 else '#10b981' }}"
+        title="Escala de -10 (muy negativo) a +10 (muy positivo). El promedio normal de la cobertura noticiosa ronda entre -2 y +2.">
+    <i class="bi bi-emoji-neutral-fill me-1"></i>Tono promedio: {{ pulse.tone.avg }} ({{ pulse.tone.n }} artículos)
+    <i class="bi bi-info-circle ms-1"></i>
+  </span>
+  {% endif %}
+</div>
+{% if pulse.tone.avg is not none %}
+<div class="mb-3" style="font-size:.72rem;color:var(--muted)">
+  <i class="bi bi-info-circle me-1"></i>Escala de -10 (muy negativo) a +10 (muy positivo) — el promedio esperado de la cobertura noticiosa normal ronda entre -2 y +2.
+</div>
+{% endif %}
+
+{% if not pulse.persons.labels and not pulse.orgs.labels %}
+<div class="card p-4 text-center" style="color:var(--muted)">
+  Sin datos todavía para {{ 'México' if scope == 'mx' else 'el mundo' }} en esta fecha.
+</div>
+{% else %}
+
+{% if pulse.stories %}
+<div class="card p-4 mb-3">
+  <div class="section-label mb-1"><i class="bi bi-newspaper me-1" style="color:#8b5cf6"></i>
+    Top {{ pulse.stories|length }} noticias de {{ 'México' if scope == 'mx' else 'el mundo' }} hoy
+  </div>
+  <p style="color:var(--text2);font-size:.8rem;max-width:70ch">
+    Una noticia real representativa de cada uno de los temas/personas más mencionados hoy — no es un
+    listado completo de artículos, es un resumen de lo más relevante.
+  </p>
+  <div class="list-group list-group-flush">
+    {% for s in pulse.stories %}
+    <a href="{{ s.link }}" target="_blank" rel="noopener" class="list-group-item list-group-item-action px-0 py-2"
+       style="background:transparent;border-color:var(--border)">
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <div style="min-width:0">
+          <div style="color:var(--text);font-size:.9rem;font-weight:600">{{ s.title }}</div>
+          <div style="color:var(--text2);font-size:.76rem;margin-top:2px">
+            {{ s.domain }} · relacionado con <strong>{{ s.name }}</strong> ({{ s.mentions }} menci{{ 'ón' if s.mentions == 1 else 'ones' }})
+          </div>
+        </div>
+        <i class="bi bi-box-arrow-up-right" style="color:var(--muted);flex-shrink:0;margin-top:3px"></i>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card p-4 h-100">
+      <div class="section-label mb-1"><i class="bi bi-people-fill me-1" style="color:#8b5cf6"></i>Personas más mencionadas</div>
+      <div id="pulse-persons-chart" style="height:420px"></div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card p-4 h-100">
+      <div class="section-label mb-1"><i class="bi bi-building me-1" style="color:#8b5cf6"></i>Organizaciones más mencionadas</div>
+      <div id="pulse-orgs-chart" style="height:420px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card p-4 mb-3">
+  <div class="section-label mb-1"><i class="bi bi-globe-americas me-1" style="color:#8b5cf6"></i>Lugares con más cobertura hoy</div>
+  <div id="pulse-map-chart" style="height:460px"></div>
+</div>
+
+{% endif %}
+{% endif %}
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script>
+(function () {
+  const pulse = {{ pulse | tojson }};
+  if (!pulse.available) return;
+
+  const css   = getComputedStyle(document.documentElement);
+  const cVar  = (name, fallback) => (css.getPropertyValue(name) || fallback).trim();
+  const text  = cVar('--text', '#e2e8f0');
+  const text2 = cVar('--text2', '#94a3b8');
+  const border= cVar('--border', '#1e2d45');
+  const card2 = cVar('--card2', '#1a2235');
+
+  if (pulse.persons && pulse.persons.labels.length) {
+    Plotly.newPlot('pulse-persons-chart', [{
+      type: 'bar', orientation: 'h',
+      x: pulse.persons.values, y: pulse.persons.labels,
+      marker: { color: '#8b5cf6' },
+    }], {
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+      font: { color: text, size: 11 },
+      xaxis: { gridcolor: border, tickfont: { color: text2 } },
+      yaxis: { tickfont: { color: text2 }, automargin: true },
+      margin: { l: 10, r: 20, t: 10, b: 30 },
+    }, { responsive: true, displayModeBar: false });
+  }
+
+  if (pulse.orgs && pulse.orgs.labels.length) {
+    Plotly.newPlot('pulse-orgs-chart', [{
+      type: 'bar', orientation: 'h',
+      x: pulse.orgs.values, y: pulse.orgs.labels,
+      marker: { color: '#a78bfa' },
+    }], {
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+      font: { color: text, size: 11 },
+      xaxis: { gridcolor: border, tickfont: { color: text2 } },
+      yaxis: { tickfont: { color: text2 }, automargin: true },
+      margin: { l: 10, r: 20, t: 10, b: 30 },
+    }, { responsive: true, displayModeBar: false });
+  }
+
+  if (pulse.locations && pulse.locations.lat.length) {
+    Plotly.newPlot('pulse-map-chart', [{
+      type: 'scattergeo', mode: 'markers',
+      lat: pulse.locations.lat, lon: pulse.locations.lon,
+      text: pulse.locations.text, hoverinfo: 'text',
+      marker: {
+        color: '#8b5cf6', opacity: 0.75,
+        size: pulse.locations.size,
+        sizemode: 'area',
+        sizeref: 2 * Math.max(...pulse.locations.size) / (32 ** 2),
+        sizemin: 4,
+        line: { color: '#c4b5fd', width: 0.5 },
+      },
+    }], {
+      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+      font: { color: text, size: 11 },
+      geo: {
+        showland: true, landcolor: card2, showocean: true, oceancolor: 'rgba(0,0,0,0)',
+        showcountries: true, countrycolor: border, showcoastlines: true, coastlinecolor: border,
+        bgcolor: 'transparent',
+        {% if scope == 'mx' %}
+        center: { lon: -102, lat: 23 }, projection: { type: 'mercator', scale: 4 },
+        {% else %}
+        projection: { type: 'natural earth' },
+        {% endif %}
+      },
+      margin: { l: 0, r: 0, t: 0, b: 0 },
+    }, { responsive: true, displayModeBar: false });
+  }
+})();
+</script>
+
+{% endblock %}

@@ -56,9 +56,6 @@
     <a href="/searches/{{ s.id }}/similarities" class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-diagram-3 me-1" style="color:var(--purple)"></i>Similitudes
     </a>
-    <a href="/searches/{{ s.id }}/network{{ '?' ~ request.query_string.decode() if request.query_string }}" class="btn btn-sm btn-outline-secondary">
-      <i class="bi bi-share-fill me-1" style="color:#22d3ee"></i>Comportamiento de medios
-    </a>
     <a href="/searches/{{ s.id }}/edit" class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-pencil me-1"></i>Editar
     </a>
@@ -86,8 +83,13 @@
     <div style="background:var(--card2);border-radius:4px;height:6px;overflow:hidden">
       <div id="init-bar" style="background:var(--accent);height:100%;width:0%;transition:width .4s ease"></div>
     </div>
+    {% set _mt = (s.media_types or 'tv,radio').split(',') %}
     <div id="init-sub" style="font-size:.75rem;color:var(--muted);margin-top:.4rem">
+      {% if 'tv' in _mt or 'radio' in _mt %}
       Buscando coincidencias en las transcripciones del período seleccionado…
+      {% else %}
+      Consultando fuentes externas ({{ 'Google Noticias' if 'news' in _mt }}{{ ', ' if 'news' in _mt and ('youtube' in _mt or 'gdelt' in _mt) }}{{ 'YouTube' if 'youtube' in _mt }}{{ ', ' if 'youtube' in _mt and 'gdelt' in _mt }}{{ 'Búsqueda global' if 'gdelt' in _mt }}) del período seleccionado — no hay transcripciones locales que revisar en esta búsqueda…
+      {% endif %}
     </div>
   </div>
 </div>
@@ -494,6 +496,18 @@
               {% if m.has_music %}<span title="Música detectada por audio">🎵</span> {% endif %}{{ m.centered_text | highlight(m.keyword, s.phonetic, s.whole_word) }}
             </div>
             <div class="mtext-full" hidden>{{ m.matched_text | highlight(m.keyword, s.phonetic, s.whole_word) }}</div>
+            {% if m.extra %}
+            <details style="margin-top:.35rem;font-size:.75rem;color:var(--muted)">
+              <summary style="cursor:pointer;color:var(--accent)">Ver detalle completo (Búsqueda global)</summary>
+              <div style="margin-top:.35rem;line-height:1.5">
+                {% if m.extra.personas %}<div><strong>Personas:</strong> {{ m.extra.personas | join(', ') }}</div>{% endif %}
+                {% if m.extra.organizaciones %}<div><strong>Organizaciones:</strong> {{ m.extra.organizaciones | join(', ') }}</div>{% endif %}
+                {% if m.extra.temas %}<div><strong>Temas:</strong> {{ m.extra.temas[:8] | join(', ') }}</div>{% endif %}
+                {% if m.extra.citas %}<div><strong>Citas:</strong> {% for c in m.extra.citas[:3] %}<div>"{{ c }}"</div>{% endfor %}</div>{% endif %}
+                {% if m.extra.tono %}<div><strong>Tono:</strong> {{ m.extra.tono.split(',')[0] }}</div>{% endif %}
+              </div>
+            </details>
+            {% endif %}
           </td>
           <td class="text-center" style="vertical-align:middle">
             <button type="button" class="btn-del-match" title="Eliminar (no relacionado con la búsqueda)"
@@ -759,6 +773,18 @@
       : m.channel_logo
       ? `<button type="button" class="btn-audio-clip btn-audio-clip-logo" title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, ${m.id})"><img src="${esc(m.channel_logo)}" loading="lazy" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline'"><i class="bi bi-play-circle-fill" style="display:none"></i></button>`
       : `<button type="button" class="btn-audio-clip" title="Escuchar clip (±10s)" onclick="openAudioClip({{ s.id }}, ${m.id})"><i class="bi bi-play-circle-fill"></i></button>`;
+    // extra_data (GDELT vía BigQuery, ver alerts/gdelt_bigquery.py) --
+    // mismo detalle expandible que el render inicial (Jinja), ver arriba.
+    const extraHtml = m.extra ? `<details style="margin-top:.35rem;font-size:.75rem;color:var(--muted)">
+        <summary style="cursor:pointer;color:var(--accent)">Ver detalle completo (Búsqueda global)</summary>
+        <div style="margin-top:.35rem;line-height:1.5">
+          ${m.extra.personas && m.extra.personas.length ? `<div><strong>Personas:</strong> ${esc(m.extra.personas.join(', '))}</div>` : ''}
+          ${m.extra.organizaciones && m.extra.organizaciones.length ? `<div><strong>Organizaciones:</strong> ${esc(m.extra.organizaciones.join(', '))}</div>` : ''}
+          ${m.extra.temas && m.extra.temas.length ? `<div><strong>Temas:</strong> ${esc(m.extra.temas.slice(0,8).join(', '))}</div>` : ''}
+          ${m.extra.citas && m.extra.citas.length ? `<div><strong>Citas:</strong> ${m.extra.citas.slice(0,3).map(c => `<div>"${esc(c)}"</div>`).join('')}</div>` : ''}
+          ${m.extra.tono ? `<div><strong>Tono:</strong> ${esc(m.extra.tono.split(',')[0])}</div>` : ''}
+        </div>
+      </details>` : '';
     return `<tr style="animation:fadeIn .4s ease" data-ts="${esc(ts)}" data-mid="${m.id}">
       <td style="white-space:nowrap;color:var(--muted);font-size:.78rem;vertical-align:middle">${fat}</td>
       <td class="text-center" style="vertical-align:middle">
@@ -770,6 +796,7 @@
       <td style="vertical-align:middle">
         <div class="mtext mtext-wide" data-bs-toggle="tooltip">${txt}</div>
         <div class="mtext-full" hidden>${fullTxt}</div>
+        ${extraHtml}
       </td>
       <td class="text-center" style="vertical-align:middle">
         <button type="button" class="btn-del-match" title="Eliminar (no relacionado con la búsqueda)"

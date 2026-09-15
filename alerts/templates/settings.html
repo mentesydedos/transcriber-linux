@@ -104,6 +104,44 @@
     {% endif %}
   </div>
 
+  <!-- Cuota de YouTube -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-1">Cuota de búsqueda en YouTube</div>
+    {% set yt_today = cfg.get('youtube_quota_date') == today_iso %}
+    {% set yt_used = (cfg.get('youtube_quota_used') | int) if yt_today else 0 %}
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:.5rem">
+      Google no expone la cuota restante -- este es un conteo propio de lo que ya consultamos hoy,
+      no un dato oficial de Google Cloud. Cada palabra clave de una búsqueda con YouTube activado
+      consume 100 unidades por consulta (1 al crearse + 1 diaria mientras siga activa).
+    </p>
+    <div class="d-flex align-items-center gap-2">
+      <div style="flex:1;height:8px;border-radius:4px;background:var(--border);overflow:hidden">
+        <div style="height:100%;width:{{ [(yt_used / 10000 * 100) | round(1), 100] | min }}%;background:{{ '#ef4444' if yt_used >= 8000 else ('#f59e0b' if yt_used >= 5000 else '#10b981') }}"></div>
+      </div>
+      <span style="font-size:.8rem;color:var(--text);white-space:nowrap">{{ yt_used }} / 10,000</span>
+    </div>
+  </div>
+
+  <!-- Búsqueda global vía BigQuery -->
+  <div class="card p-4 mb-3">
+    <div class="section-label mb-1">Búsqueda global vía BigQuery <span style="color:var(--muted);font-weight:400">— opcional</span></div>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">
+      Consultas de búsqueda global sobre Google BigQuery (más completo que el modo estándar y
+      sin su límite de tasa) usando una cuenta de servicio de Google Cloud.
+    </p>
+    <div class="mb-1">
+      <label class="form-label">Llave JSON de la cuenta de servicio</label>
+      <textarea name="bigquery_credentials_json" class="form-control" rows="5"
+                style="font-family:monospace;font-size:.78rem"
+                placeholder='{"type": "service_account", "project_id": "...", ...}'>{{ cfg.get('bigquery_credentials_json','') }}</textarea>
+    </div>
+    {% if cfg.get('bigquery_credentials_json') %}
+    <div style="font-size:.8rem;color:var(--green)">
+      <i class="bi bi-check-circle-fill me-1"></i>Credenciales guardadas.
+    </div>
+    {% endif %}
+  </div>
+
   <!-- Telegram -->
   <div class="card p-4 mb-3">
     <div class="section-label mb-1">Telegram Bot</div>

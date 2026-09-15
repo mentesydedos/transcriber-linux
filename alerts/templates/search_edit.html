@@ -115,7 +115,42 @@
     <div style="font-size:.78rem;color:var(--muted);margin-top:.6rem">
       Toca uno para activarlo o desactivarlo. Los resaltados están activos.
     </div>
+
+    <!-- Restringir a canales específicos (opcional) -->
+    <details class="p-3 rounded mt-3" style="background:var(--card2);border:1px solid var(--border)" {{ 'open' if current_channels }}>
+      <summary style="cursor:pointer;color:var(--accent);font-weight:600">
+        Restringir a canales específicos de TV/radio (opcional)
+      </summary>
+      <div style="font-size:.78rem;color:var(--text2);margin:.5rem 0 .75rem">
+        Sin marcar ninguno, se monitorean TODOS los canales de TV/radio activados arriba.
+        Marca solo los que te interesan para limitar la búsqueda a esos canales.
+      </div>
+      {% for kind, kind_label in [('tv', 'Televisión'), ('radio', 'Radio')] %}
+      <div class="mb-2">
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="fw-semibold" style="color:var(--text);font-size:.85rem">{{ kind_label }}</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2 ch-clear" style="font-size:.72rem">Limpiar</button>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          {% for ch in channel_choices if ch.kind == kind %}
+          <input class="btn-check" type="checkbox" name="channels" value="{{ ch.id }}" id="ch_{{ ch.id }}"
+                 autocomplete="off" {{ 'checked' if ch.id in current_channels }}>
+          <label class="mt-chip" for="ch_{{ ch.id }}" style="font-size:.78rem">
+            <span>{{ ch.name }}</span>
+            <i class="bi bi-check-circle-fill mt-chip-check"></i>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </details>
   </div>
+
+  <script>
+    document.querySelectorAll('.ch-clear').forEach(btn => btn.addEventListener('click', () => {
+      btn.closest('.mb-2').querySelectorAll('input[name="channels"]').forEach(cb => cb.checked = false);
+    }));
+  </script>
 
   <style>
   .mt-chip {

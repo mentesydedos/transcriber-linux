@@ -196,6 +196,17 @@ def _enrich_match(m, phonetic=False, whole_word=False):
     raw_centered = _center_text(text, idx_full, words_each_side=50)
     cleaned = raw_centered.replace(CHUNK_SEP_PREV, ' ').replace(CHUNK_SEP_NEXT, ' ')
     md['centered_text'] = re.sub(r' {2,}', ' ', cleaned).strip()
+    # extra_data: solo GDELT vía BigQuery lo llena (ver
+    # alerts/gdelt_bigquery.py) -- personas/organizaciones/temas/tono/citas.
+    # Se parsea aquí (no se manda el JSON crudo a la plantilla) para que
+    # sea directo de iterar en Jinja.
+    if md.get('extra_data'):
+        try:
+            md['extra'] = json.loads(md['extra_data'])
+        except Exception:
+            md['extra'] = None
+    else:
+        md['extra'] = None
     if md['channel_kind'] == 'youtube' and md.get('source_url'):
         # Miniatura pública de YouTube -- imagen estática de su propio CDN,
         # sin descargar/procesar nada de nuestro lado (a diferencia del
@@ -510,6 +521,12 @@ def _init_db():
         # watcher.py:_weekly_excel_reports.
         ('weekly_excel_report', 'INTEGER DEFAULT 0'),
         ('last_weekly_report',  'TEXT'),
+        # Restringir tv/radio a un subconjunto de canales -- JSON de
+        # channel_id (int), igual formato que keywords. Lista vacía/NULL =
+        # sin restricción (todos los canales del media_type elegido, el
+        # comportamiento de siempre). Ver alerts/watcher.py (histórico y
+        # loop en vivo) y search_new.html/search_edit.html.
+        ('channels', "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {col} {dfn}")
@@ -557,6 +574,15 @@ def _init_db():
         # mostrado. Default 1 -- una fila siempre representa al menos una
         # detección real.
         conn.execute("ALTER TABLE matches ADD COLUMN occurrence_count INTEGER DEFAULT 1")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        # Metadata extra en JSON -- por ahora solo la llena GDELT vía BigQuery
+        # (alerts/gdelt_bigquery.py): personas/organizaciones/temas/tono/citas
+        # del Global Knowledge Graph, mucho más rico que un match normal.
+        # NULL para todo lo demás (TV/radio/Google Noticias/YouTube/GDELT DOC API).
+        conn.execute("ALTER TABLE matches ADD COLUMN extra_data TEXT")
         conn.commit()
     except Exception:
         pass
@@ -632,6 +658,20 @@ def _connect_trans_db(timeout: float = 10) -> sqlite3.Connection:
     return conn
 
 
+def _tv_radio_channels() -> list[dict]:
+    """Catálogo de canales de TV/radio para el selector de "nueva búsqueda"
+    (restringir a solo algunos canales, ver searches.channels) --
+    channel_status ya es el registro real que usa el grabador (manager.py),
+    así que aparece cualquier canal configurado aunque no tenga
+    transcripciones todavía (a diferencia de sacarlo de `transcriptions`)."""
+    from alerts.channel_types import channel_type
+    rows = _connect_trans_db().execute(
+        "SELECT channel_id, channel_name FROM channel_status ORDER BY channel_id"
+    ).fetchall()
+    return [{'id': r['channel_id'], 'name': r['channel_name'], 'kind': channel_type(r['channel_id'])}
+            for r in rows if channel_type(r['channel_id']) in ('tv', 'radio')]
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 def create_app() -> Flask:
     _init_db()
@@ -640,6 +680,12 @@ def create_app() -> Flask:
     _epg_conn = sqlite3.connect(str(ALERTS_DB))
     _epg_schema(_epg_conn)
     _epg_conn.close()
+
+    # Inicializar esquema de Pulso del mundo (cache de tendencias GDELT)
+    from alerts.world_pulse import ensure_schema as _pulse_schema
+    _pulse_conn = sqlite3.connect(str(ALERTS_DB))
+    _pulse_schema(_pulse_conn)
+    _pulse_conn.close()
 
     app = Flask(__name__, template_folder='templates')
     app.secret_key = _get_secret_key()
@@ -682,6 +728,13 @@ def create_app() -> Flask:
                 return redirect(url_for('login'))
             return f(*a, **kw)
         return inner
+
+    def _can_use_external_sources() -> bool:
+        """YouTube y GDELT consumen cuota/cuentas externas compartidas (API
+        de YouTube, BigQuery) -- a diferencia de TV/radio/Google Noticias,
+        que no tienen ese costo -- así que quedan restringidas a roles de
+        confianza (admin, investigador), no a cualquier usuario."""
+        return session.get('role') in ('admin', 'investigador')
 
     def admin_required(f):
         @wraps(f)
@@ -820,6 +873,19 @@ def create_app() -> Flask:
     # ══════════════════════════════════════════════════════════════
     # DASHBOARD
     # ══════════════════════════════════════════════════════════════
+    @app.route('/pulso')
+    @login_required
+    def world_pulse_view():
+        """Tendencias del día (personas, organizaciones, lugares, tono) del
+        GKG sin acotar por ninguna búsqueda -- ver alerts/world_pulse.py.
+        Independiente de cualquier búsqueda del usuario."""
+        from alerts.world_pulse import get_pulse
+        scope = request.args.get('scope', 'world')
+        if scope not in ('world', 'mx'):
+            scope = 'world'
+        pulse = get_pulse(scope)
+        return render_template('world_pulse.html', pulse=pulse, scope=scope)
+
     @app.route('/dashboard')
     @login_required
     def dashboard():
@@ -944,7 +1010,11 @@ def create_app() -> Flask:
             dmode         = request.form.get('delivery_mode', 'final')
             remail        = request.form.get('report_email', '').strip()
             notify_tg     = 1 if request.form.get('notify_telegram') else 0
-            media_types   = ','.join(request.form.getlist('media_types')) or 'tv,radio'
+            mt_selected   = request.form.getlist('media_types')
+            if not _can_use_external_sources():
+                mt_selected = [m for m in mt_selected if m not in ('youtube', 'gdelt')]
+            media_types   = ','.join(mt_selected) or 'tv,radio'
+            channels      = [int(c) for c in request.form.getlist('channels') if c.isdigit()]
             threshold_enabled = 1 if request.form.get('threshold_alert_enabled') else 0
             threshold_count   = int(request.form.get('threshold_count') or 5)
             threshold_window  = int(request.form.get('threshold_window_min') or 30)
@@ -959,13 +1029,14 @@ def create_app() -> Flask:
                     INSERT INTO searches
                       (user_id,name,keywords,exclude_words,phonetic,whole_word,date_start,date_end,
                        delivery_mode,report_email,status,notify_telegram,media_types,dedup_channel,exclude_music,
-                       threshold_alert_enabled,threshold_count,threshold_window_min,weekly_excel_report)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?,?)
+                       threshold_alert_enabled,threshold_count,threshold_window_min,weekly_excel_report,channels)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?,?,?)
                 """, (session['uid'], name, json.dumps(kws, ensure_ascii=False),
                       json.dumps(excl, ensure_ascii=False),
                       phonetic, whole_word, d_start, d_end, dmode, remail, notify_tg, media_types,
                       dedup_channel, exclude_music,
-                      threshold_enabled, threshold_count, threshold_window, weekly_excel))
+                      threshold_enabled, threshold_count, threshold_window, weekly_excel,
+                      json.dumps(channels)))
                 db().commit()
                 flash(f'Búsqueda «{name}» creada. Procesando el histórico…', 'success')
                 # Al detalle, no al dashboard -- ahí ya está el banner de progreso
@@ -994,10 +1065,13 @@ def create_app() -> Flask:
         ends   = [r[1] for r in (video_range, audio_range) if r]
         recording_range = (min(starts), max(ends)) if starts else None
 
+        media_types_choices = MEDIA_TYPES if _can_use_external_sources() else \
+            [(v, l) for v, l in MEDIA_TYPES if v not in ('youtube', 'gdelt')]
         return render_template('search_new.html', today=date.today().isoformat(), min_date=min_date,
                                recording_range=recording_range,
-                               media_types_choices=MEDIA_TYPES,
-                               default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')))
+                               media_types_choices=media_types_choices,
+                               default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')),
+                               channel_choices=_tv_radio_channels())
 
     def _match_where(sid, kws, chs, pfs, mts, date_from, date_to):
         """Construye WHERE + params para la tabla matches con todos los filtros activos.
@@ -1183,43 +1257,6 @@ def create_app() -> Flask:
             heatmap=heatmap, hm_max=hm_max, hm_dates=hm_dates_list,
             prog_map=prog_map,
             live_eligible=live_eligible,
-        )
-
-    @app.route('/searches/<int:sid>/network')
-    @login_required
-    def search_network(sid):
-        """Dashboard de comportamiento de medios: red de eco entre canales
-        (quién origina un tema y quién lo repite después), flujo palabra
-        clave -> medio -> canal (Sankey) y pulso temporal por tipo de medio.
-        Respeta los mismos filtros activos en la vista de coincidencias."""
-        s = _get_search(sid)
-        if not s:
-            flash('Búsqueda no encontrada.', 'danger')
-            return redirect(url_for('dashboard'))
-
-        kfs       = request.args.getlist('kw')
-        cfs       = request.args.getlist('ch')
-        pfs       = request.args.getlist('prog')
-        mfs       = request.args.getlist('mt')
-        date_from = request.args.get('date_from', '')
-        date_to   = request.args.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
-
-        d = db()
-        rows = d.execute(
-            f"SELECT channel_id, channel_name, keyword, timestamp FROM matches WHERE {where}", params
-        ).fetchall()
-
-        from alerts.media_network import build_echo_network, build_sankey, build_stream_timeline
-        network  = build_echo_network(rows)
-        sankey   = build_sankey(rows)
-        timeline = build_stream_timeline(rows)
-
-        return render_template('search_network.html',
-            s=s, total=len(rows),
-            network=network, sankey=sankey, timeline=timeline,
-            kfs=kfs, cfs=cfs, pfs=pfs, mfs=mfs, date_from=date_from, date_to=date_to,
-            has_filters=bool(kfs or cfs or pfs or mfs or date_from or date_to),
         )
 
     @app.route('/searches/<int:sid>/similarities')
@@ -1649,7 +1686,16 @@ def create_app() -> Flask:
             new_excl   = json.dumps(excl, ensure_ascii=False)
             new_phon   = 1 if request.form.get('phonetic') else 0
             new_whole  = 1 if request.form.get('whole_word') else 0
-            new_media  = ','.join(request.form.getlist('media_types')) or 'tv,radio'
+            new_mt_selected = request.form.getlist('media_types')
+            if not _can_use_external_sources():
+                # No le quita lo que ya tenía si otro usuario (admin/
+                # investigador) lo activó antes -- solo evita que ESTE
+                # usuario lo ACTIVE si no lo tenía ya.
+                already = set((s['media_types'] if 'media_types' in s.keys() and s['media_types'] else 'tv,radio').split(','))
+                new_mt_selected = [m for m in new_mt_selected if m not in ('youtube', 'gdelt') or m in already]
+            new_media  = ','.join(new_mt_selected) or 'tv,radio'
+            new_channels = [int(c) for c in request.form.getlist('channels') if c.isdigit()]
+            new_channels_json = json.dumps(new_channels)
             # No entra en needs_reinit: solo cambia cómo se cuentan las coincidencias
             # DE AQUÍ EN ADELANTE, no reinterpreta lo ya escaneado.
             new_dedup  = 1 if request.form.get('dedup_channel') else 0
@@ -1670,7 +1716,8 @@ def create_app() -> Flask:
                 new_phon  != s['phonetic']    or
                 new_whole != s['whole_word']  or
                 new_media != (s['media_types'] if 'media_types' in s.keys() else 'tv,radio') or
-                new_exclude_music != (s['exclude_music'] if 'exclude_music' in s.keys() and s['exclude_music'] is not None else 1)
+                new_exclude_music != (s['exclude_music'] if 'exclude_music' in s.keys() and s['exclude_music'] is not None else 1) or
+                new_channels_json != (s['channels'] if 'channels' in s.keys() and s['channels'] else '[]')
             )
 
             db().execute("""
@@ -1679,7 +1726,7 @@ def create_app() -> Flask:
                   delivery_mode=?, report_email=?, status=?, notify_telegram=?,
                   initialized=?, media_types=?, dedup_channel=?, exclude_music=?,
                   threshold_alert_enabled=?, threshold_count=?, threshold_window_min=?,
-                  weekly_excel_report=?
+                  weekly_excel_report=?, channels=?
                 WHERE id=?
             """, (name, new_kws, new_excl, new_phon, new_whole, new_start, new_end,
                   request.form.get('delivery_mode', 'final'),
@@ -1687,10 +1734,24 @@ def create_app() -> Flask:
                   request.form.get('status', 'active'), notify_tg,
                   0 if needs_reinit else s['initialized'], new_media, new_dedup, new_exclude_music,
                   new_threshold_enabled, new_threshold_count, new_threshold_window, new_weekly_excel,
+                  new_channels_json,
                   sid))
 
             if needs_reinit:
-                db().execute("DELETE FROM matches WHERE search_id=?", (sid,))
+                # Solo se borran TV/radio -- son baratos de re-escanear
+                # completos desde transcriptions.db. Google Noticias/
+                # YouTube/GDELT NO se tocan: son fuentes externas (rate
+                # limit, cuota, o video ya descargado/transcrito) donde
+                # perder lo ya obtenido es costoso y evitable -- el
+                # histórico ya vuelve a correr para el rango completo con
+                # las keywords actuales, y el dedup por URL/link (ver
+                # alerts/watcher.py:_poll_articles_for_search) ya evita
+                # duplicar lo que sigue vigente, así que no hace falta
+                # borrar primero para que quede correcto.
+                from alerts.channel_types import NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID, GDELT_CHANNEL_ID, GDELT_MX_CHANNEL_ID
+                db().execute(f"""DELETE FROM matches WHERE search_id=? AND channel_id NOT IN
+                              ({NEWS_CHANNEL_ID}, {YOUTUBE_CHANNEL_ID}, {GDELT_CHANNEL_ID}, {GDELT_MX_CHANNEL_ID})""",
+                             (sid,))
                 flash('Búsqueda actualizada. Re-escaneando histórico con el nuevo rango…', 'success')
             else:
                 flash('Búsqueda actualizada.', 'success')
@@ -1700,11 +1761,20 @@ def create_app() -> Flask:
 
         from alerts.channel_types import MEDIA_TYPES
         current_media = (s['media_types'] if 'media_types' in s.keys() and s['media_types'] else 'tv,radio').split(',')
+        current_channels = json.loads(s['channels']) if 'channels' in s.keys() and s['channels'] else []
+        # Si la búsqueda ya tiene youtube/gdelt activo (lo puso un admin/
+        # investigador antes), se sigue mostrando el checkbox aunque quien
+        # edite ahora no tenga el rol -- para que pueda ver el estado real y
+        # no lo desactive "sin querer" por no aparecer en la lista.
+        media_types_choices = MEDIA_TYPES if _can_use_external_sources() else \
+            [(v, l) for v, l in MEDIA_TYPES if v not in ('youtube', 'gdelt') or v in current_media]
         return render_template('search_edit.html', s=s,
                                keywords=json.loads(s['keywords']),
                                exclude_words=json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else [],
-                               media_types_choices=MEDIA_TYPES,
-                               current_media_types=current_media)
+                               media_types_choices=media_types_choices,
+                               current_media_types=current_media,
+                               channel_choices=_tv_radio_channels(),
+                               current_channels=set(current_channels))
 
     @app.route('/searches/<int:sid>/toggle', methods=['POST'])
     @login_required
@@ -1916,6 +1986,8 @@ def create_app() -> Flask:
     def admin_user_role(uid):
         if uid != session['uid']:
             role = request.form.get('role', 'user')
+            if role not in ('user', 'investigador', 'admin'):
+                role = 'user'
             db().execute("UPDATE users SET role=? WHERE id=?", (role, uid))
             db().commit()
         return redirect(url_for('admin'))
@@ -2026,6 +2098,7 @@ def create_app() -> Flask:
         if request.method == 'POST':
             for k in ['smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_tls',
                       'gmail_client_id','gmail_client_secret',
+                      'bigquery_credentials_json',
                       'tg_token','tg_chat_id']:
                 d.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
                           (k, request.form.get(k, '')))
@@ -2033,7 +2106,7 @@ def create_app() -> Flask:
             flash('Configuración guardada.', 'success')
         cfg       = {r['key']: r['value'] for r in d.execute("SELECT key,value FROM settings")}
         epg_stats = get_coverage_stats(d)
-        return render_template('settings.html', cfg=cfg, epg_stats=epg_stats)
+        return render_template('settings.html', cfg=cfg, epg_stats=epg_stats, today_iso=date.today().isoformat())
 
     @app.route('/settings/epg_fetch', methods=['POST'])
     @admin_required

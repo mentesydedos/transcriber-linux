@@ -146,7 +146,7 @@ function initMiniCalendar(opts) {
    ya activado (si no, se ven "apagados" aunque estén marcados) */
 [data-theme="light"] .form-check-input:not(:checked) { background-color: #fff !important; border-color: #cbd5e1 !important; }
 [data-theme="light"] .form-control::placeholder { color: var(--muted) !important; }
-[data-theme="light"] .table { color: #1e293b !important; }
+[data-theme="light"] .table { --bs-table-color: #1e293b !important; color: #1e293b !important; }
 [data-theme="light"] .table tbody tr:hover { background: #f1f5f9 !important; }
 
 /* NOTA: se probó filter:invert(1) en ::-webkit-calendar-picker-indicator
@@ -202,7 +202,14 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system,Bli
 .stat-icon { font-size: 1.6rem; opacity: .15; }
 
 /* ── Table ── */
-.table { --bs-table-bg: transparent; color: var(--text); }
+/* Bootstrap 5.3 colorea las celdas via --bs-table-color en un selector
+   (.table > :not(caption) > * > *) mas especifico que ".table", asi que
+   sin fijar tambien la variable, celdas SIN color inline heredaban el
+   default de Bootstrap (--bs-body-color, casi negro) en vez de var(--text)
+   -- ilegible sobre fondo oscuro. Las celdas con color inline (la mayoria
+   de las columnas secundarias) no se veian afectadas porque un inline
+   style le gana a cualquier regla de clase. */
+.table { --bs-table-bg: transparent; --bs-table-color: var(--text); color: var(--text); }
 .table th { font-size: .7rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); border-color: var(--border); padding: .6rem 1rem; font-weight: 600; }
 .table td { border-color: var(--border); vertical-align: middle; font-size: .875rem; padding: .6rem 1rem; }
 .table tbody tr:hover { background: #ffffff06; }
@@ -301,6 +308,9 @@ a:hover { color: #60a5fa; }
       </a>
       <a class="nav-link {% if '/searches/new' in request.path %}active{% endif %}" href="/searches/new">
         <i class="bi bi-plus-circle"></i> Nueva búsqueda
+      </a>
+      <a class="nav-link {% if request.path=='/pulso' %}active{% endif %}" href="/pulso">
+        <i class="bi bi-activity"></i> Pulso del mundo
       </a>
       <a class="nav-link {% if request.path=='/videowall' %}active{% endif %}" href="/videowall">
         <i class="bi bi-grid-3x3-gap"></i> Live TV

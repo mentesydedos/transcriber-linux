@@ -30,7 +30,11 @@ ALERTS_DB     = BASE_DIR / 'alerts.db'
 TRANS_DB      = BASE_DIR / 'transcriptions.db'
 POLL_INTERVAL = 5   # segundos entre cada ciclo
 NEWS_POLL_MINUTES  = 30  # cada cuánto se vuelve a consultar Google Noticias por búsqueda activa
-GDELT_POLL_MINUTES = 30  # ídem para GDELT (fuente opt-in, ver alerts/channel_types.py)
+GDELT_POLL_MINUTES = 120  # ídem para GDELT (fuente opt-in, ver alerts/channel_types.py) --
+                          # más espaciado que Google Noticias a propósito: BigQuery cobra
+                          # por partición de día escaneada (ver _poll_gdelt_for_search), así
+                          # que consultar cada 30 min no traía más noticias, solo repetía
+                          # el escaneo del mismo día varias veces de más.
 WEEKLY_REPORT_WEEKDAY = 0  # lunes -- reporta la semana calendario Lun-Dom recién cerrada
 # YouTube Data API v3 tiene cuota diaria limitada (10,000 unidades/día,
 # 100 por búsqueda -- ~100 búsquedas/día en total, compartidas entre TODAS
@@ -341,10 +345,16 @@ def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[s
             # internacional, ver alerts/gdelt.py) -- Google Noticias no lo
             # trae, así que cae al channel_id fijo de siempre.
             art_channel_id = art.get('channel_id', channel_id)
+            # extra_data: solo GDELT vía BigQuery lo trae (personas,
+            # organizaciones, temas, tono, citas -- ver
+            # alerts/gdelt_bigquery.py); NULL para todo lo demás.
+            extra = art.get('extra_data')
+            extra_json = json.dumps(extra, ensure_ascii=False) if extra else None
             cur = adb.execute("""INSERT OR IGNORE INTO matches
-                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (s['id'], kw, art_channel_id, art['source'], ts, art['title'], art['link'], art.get('source_domain')))
+                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain, extra_data)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (s['id'], kw, art_channel_id, art['source'], ts, art['title'], art['link'],
+                 art.get('source_domain'), extra_json))
             total += cur.rowcount
     return total
 
@@ -366,14 +376,62 @@ def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] 
 def _poll_gdelt_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                             date_from: str | None = None, date_to: str | None = None) -> int:
     """GDELT (cobertura internacional, opt-in -- ver alerts/channel_types.py
-    MEDIA_TYPES y alerts/gdelt.py). Mismo mecanismo que Google Noticias,
-    pero con su propio tope (250) y su propio rate limit (1 consulta/5s,
-    ver alerts/gdelt.py:_throttle)."""
-    return _poll_articles_for_search(adb, s, keywords, exclude_words, date_from, date_to,
-                                      gdelt_fetch, gdelt_fetch_range, GDELT_CHANNEL_ID)
+    MEDIA_TYPES). Corre AMBAS fuentes cuando hay credenciales de BigQuery
+    (alerts/gdelt_bigquery.py) guardadas en /settings -- son complementarias,
+    no intercambiables:
+    - BigQuery/GKG: sin límite de tasa, metadata rica (extra_data), pero
+      solo encuentra el término si el GKG lo extrajo como entidad FORMAL
+      (persona/organización) -- confirmado con datos reales: "CJNG" y
+      "el mencho" (apodo/siglas, nunca se extraen como entidad formal)
+      dan 0 en BigQuery pero el DOC API sí los encuentra (250, tope real,
+      para "CJNG") porque busca texto completo del artículo, no entidades.
+    - DOC API (alerts/gdelt.py): búsqueda de texto completo real, pero con
+      tope de 250/consulta y rate limit propio (1 consulta/5s) -- tolerable
+      porque el poll ya corre cada GDELT_POLL_MINUTES, no en cada ciclo.
+    Sin credenciales de BigQuery, corre solo el DOC API (como siempre)."""
+    total = 0
+    row = adb.execute("SELECT value FROM settings WHERE key='bigquery_credentials_json'").fetchone()
+    if row and row['value']:
+        from alerts.gdelt_bigquery import fetch_articles as bq_fetch, fetch_articles_range as bq_fetch_range
+        # BigQuery cobra por partición de día escaneada, no por lo nuevo que
+        # haya de verdad -- sin esto, cada poll (cada 30 min) volvía a leer
+        # "los últimos 2 días" completos una y otra vez, la gran mayoría ya
+        # visto. Se acota al DELTA real: desde el día del último fetch
+        # exitoso de esta búsqueda hasta hoy (normalmente el mismo día =
+        # 1 sola partición, no 2). Solo aplica al poll en vivo (sin fechas
+        # explícitas); el histórico ya manda su propio rango.
+        bq_date_from, bq_date_to = date_from, date_to
+        if not bq_date_from and not bq_date_to:
+            last_fetch = s['gdelt_last_fetch'] if 'gdelt_last_fetch' in s.keys() else None
+            today = datetime.now().strftime('%Y-%m-%d')
+            bq_date_from = last_fetch[:10] if last_fetch else today
+            bq_date_to = today
+        total += _poll_articles_for_search(adb, s, keywords, exclude_words, bq_date_from, bq_date_to,
+                                            bq_fetch, bq_fetch_range, GDELT_CHANNEL_ID)
+    total += _poll_articles_for_search(adb, s, keywords, exclude_words, date_from, date_to,
+                                        gdelt_fetch, gdelt_fetch_range, GDELT_CHANNEL_ID)
+    return total
 
 
 # ── YouTube ────────────────────────────────────────────────────────────────
+YOUTUBE_SEARCH_COST_UNITS = 100  # search.list, ver alerts/youtube.py docstring
+
+
+def _track_youtube_quota(adb, units: int = YOUTUBE_SEARCH_COST_UNITS) -> None:
+    """Contador propio de cuota consumida -- la YouTube Data API v3 no
+    expone la cuota restante en la respuesta (a diferencia de otras APIs de
+    Google), solo se ve en la consola de Google Cloud. Se guarda en
+    settings (mismo patrón que otros contadores del proyecto) para poder
+    mostrar un estimado en /settings sin tener que ir a revisar la consola.
+    Se reinicia solo cuando cambia la fecha (cuota diaria)."""
+    today = date.today().isoformat()
+    stored_date = _get_setting(adb, 'youtube_quota_date', '')
+    used = int(_get_setting(adb, 'youtube_quota_used', '0')) if stored_date == today else 0
+    _set_setting(adb, 'youtube_quota_date', today)
+    _set_setting(adb, 'youtube_quota_used', str(used + units))
+    adb.commit()
+
+
 def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                               date_from: str | None = None, date_to: str | None = None) -> int:
     """Busca videos nuevos en YouTube por cada keyword (YouTube Data API v3),
@@ -397,6 +455,7 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
     for kw in keywords:
         try:
             results = search_videos(kw, date_from, date_to, api_key)
+            _track_youtube_quota(adb)
         except Exception as e:
             logger.error(f"[YouTube] búsqueda '{kw}' error de API: {e}")
             continue
@@ -598,14 +657,11 @@ def _process(adb, tdb, smtp, cfg=None):
             media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
             dedup_on    = bool(s['dedup_channel']) if 'dedup_channel' in s.keys() else True
             exclude_music = bool(s['exclude_music']) if 'exclude_music' in s.keys() and s['exclude_music'] is not None else True
-
-            total_count = tdb.execute("""
-                SELECT COUNT(*) FROM transcriptions
-                WHERE timestamp >= ? AND timestamp <= ?
-            """, (s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59')).fetchone()[0]
-            adb.execute("UPDATE searches SET init_rows_total=?, init_rows_done=0 WHERE id=?",
-                        (total_count, s['id']))
-            adb.commit()
+            # Restricción opcional a un subconjunto de canales de TV/radio
+            # (ver searches.channels, alerts/app.py:_tv_radio_channels) --
+            # lista vacía = sin restricción, todos los canales del media_type
+            # elegido (comportamiento de siempre).
+            allowed_channels = json.loads(s['channels']) if 'channels' in s.keys() and s['channels'] else []
 
             # Un proceso worker por canal (ver _backfill_channel arriba) --
             # channel_type() es una función pura de channel_id, así que
@@ -617,6 +673,27 @@ def _process(adb, tdb, smtp, cfg=None):
                 WHERE timestamp >= ? AND timestamp <= ?
             """, (s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59')).fetchall()
             channel_ids = [r['channel_id'] for r in channel_rows if channel_type(r['channel_id']) in media_types]
+            if allowed_channels:
+                channel_ids = [c for c in channel_ids if c in allowed_channels]
+
+            # BUG corregido (2026-09-11): antes este total contaba TODAS las
+            # transcripciones del rango sin filtrar por media_types -- una
+            # búsqueda de solo GDELT (sin tv/radio) mostraba "Procesando
+            # histórico... 0/274,458 registros" en la barra de progreso
+            # aunque no hubiera ni un canal real que escanear (channel_ids
+            # vacío), confundiendo con trabajo de TV/radio que nunca se iba
+            # a hacer. Ahora solo cuenta lo que realmente se va a procesar.
+            if channel_ids:
+                placeholders = ','.join('?' * len(channel_ids))
+                total_count = tdb.execute(f"""
+                    SELECT COUNT(*) FROM transcriptions
+                    WHERE timestamp >= ? AND timestamp <= ? AND channel_id IN ({placeholders})
+                """, [s['date_start'] + ' 00:00:00', s['date_end'] + ' 23:59:59'] + channel_ids).fetchone()[0]
+            else:
+                total_count = 0
+            adb.execute("UPDATE searches SET init_rows_total=?, init_rows_done=0 WHERE id=?",
+                        (total_count, s['id']))
+            adb.commit()
 
             meta[s['id']] = {'s': s, 'keywords': keywords, 'exclude_words': exclude_words,
                               'media_types': media_types, 'pending': len(channel_ids), 'total_hist': 0}
@@ -740,6 +817,9 @@ def _process(adb, tdb, smtp, cfg=None):
             for s in active:
                 media_types = parse_media_types(s['media_types'] if 'media_types' in s.keys() else None)
                 if row_type not in media_types:
+                    continue
+                allowed_channels = json.loads(s['channels']) if 'channels' in s.keys() and s['channels'] else []
+                if allowed_channels and row['channel_id'] not in allowed_channels:
                     continue
                 keywords      = json.loads(s['keywords'])
                 exclude_words = json.loads(s['exclude_words']) if 'exclude_words' in s.keys() and s['exclude_words'] else []
@@ -1051,6 +1131,26 @@ def _daily_jobs_loop():
         time.sleep(60)
 
 
+def _world_pulse_loop():
+    """Hilo aparte -- recalcula el caché de /pulso (alerts/world_pulse.py)
+    antes de que expire, para ambos scopes (mundo/méxico). Si no hay
+    credenciales de BigQuery configuradas, get_pulse() devuelve
+    'available': False de inmediato, sin costo -- este loop puede correr
+    siempre sin necesidad de chequear configuración aparte.
+
+    El intervalo (REFRESH_MIN) vive en alerts/world_pulse.py, no aquí --
+    junto a CACHE_TTL_MIN, con quien tiene que mantenerse sincronizado."""
+    from alerts.world_pulse import get_pulse, REFRESH_MIN
+    logger.info(f"Hilo de refresco de Pulso del mundo iniciado (cada {REFRESH_MIN} min).")
+    while True:
+        try:
+            for scope in ('world', 'mx'):
+                get_pulse(scope, force=True)
+        except Exception as e:
+            logger.exception(f"Error refrescando Pulso del mundo: {e}")
+        time.sleep(REFRESH_MIN * 60)
+
+
 def start_watcher():
     t = threading.Thread(target=_loop, daemon=True, name='alertas-watcher')
     t.start()
@@ -1058,4 +1158,6 @@ def start_watcher():
     ty.start()
     td = threading.Thread(target=_daily_jobs_loop, daemon=True, name='alertas-daily-jobs')
     td.start()
+    tp = threading.Thread(target=_world_pulse_loop, daemon=True, name='alertas-world-pulse')
+    tp.start()
     return t

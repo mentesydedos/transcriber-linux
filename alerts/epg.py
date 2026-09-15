@@ -42,6 +42,26 @@ EPG_SOURCES = [
 ]
 REFRESH_HOURS = 12
 
+# ── Fuente 3: open-epg.com (mexico2.xml, sin comprimir, mismo formato XMLTV) ──
+# Encontrada 2026-09-11 -- cubre varios canales que ni epgshare01 ni TVHeadend
+# EIT traían con programación real: Imagen (confirmado con títulos reales como
+# "Imagen noticias con Francisco Zea", NO el placeholder "CV directo" que
+# domina algunos huecos del día), TV Migrante, Canal 11 Niños. De regalo
+# también trae Canal 4 (como "Foro TV", su nombre real -- mismo fragmento que
+# ya reconocía EPGSHARE_WANTED) y Canal 22, que ya cubría epgshare01 pero sirve
+# como respaldo. "Justicia TV.mx" trae sesiones reales del Tribunal Electoral
+# ("Sesión pública TEPJF") -- es el contenido de Canal Judicial, así que se
+# mapea a nuestro "Judicial TV".
+OPENEPG_URL = 'https://www.open-epg.com/files/mexico2.xml'
+OPENEPG_WANTED = {
+    'Imagen':         ['imagen television'],
+    'TV MIGRANTE':    ['tv migrante'],
+    'Canal 11 Niños': ['once niños', 'once ninos'],
+    'Canal 4':        ['foro tv'],
+    'Canal 22':       ['canal 22 conaculta'],
+    'Judicial TV':    ['justicia tv'],
+}
+
 # Canales que queremos obtener de epgshare01.
 # Valor: lista de fragmentos (minúsculas) a buscar en el id/nombre del canal.
 # El primero que coincida gana.  Añade más fragmentos si el canal cambia de ID.
@@ -82,6 +102,12 @@ TVH_CHANNEL_MAP = {
     # epgshare01 no cubre este canal; TVHeadend si trae EIT real (confirmado
     # 2026-08-04: titulos de programa reales, no placeholder).
     'a más +':     'A más +',
+    # Igual que "A más +": epgshare01 no lo cubre, pero TVHeadend sí trae
+    # títulos reales (confirmado 2026-09-11: "FAVORITAS DEL CINE MEXICANO",
+    # "COCINANDO CON SABOR", etc. -- no el nombre del canal repetido, que es
+    # el patrón placeholder que sí tienen JaliscoTV/Canal 11 Niños/Judicial
+    # TV/UDG/Canal 44/Quiero TV/TV MIGRANTE/Imagen en esta misma señal).
+    'v +':         'V +',
 }
 
 
@@ -134,11 +160,12 @@ def _parse_ts(ts_str: str) -> str:
         return ''
 
 
-# ── Auto-detección de IDs en epgshare01 ──────────────────────────────────────
-def _build_reverse_map(root) -> dict[str, str]:
+# ── Auto-detección de IDs (epgshare01 / open-epg, mismo formato XMLTV) ────────
+def _build_reverse_map(root, wanted: dict[str, list[str]]) -> dict[str, str]:
     """
     Recorre los elementos <channel> del XML y construye un mapa
-    { epg_channel_id → nuestro_nombre } usando EPGSHARE_WANTED.
+    { epg_channel_id → nuestro_nombre } usando `wanted` (EPGSHARE_WANTED u
+    OPENEPG_WANTED, según la fuente que esté llamando).
     """
     # Recopilar todos los canales del archivo: id → (display_names...)
     epg_channels: dict[str, list[str]] = {}
@@ -149,7 +176,7 @@ def _build_reverse_map(root) -> dict[str, str]:
             epg_channels[cid] = names
 
     reverse: dict[str, str] = {}
-    for our_name, fragments in EPGSHARE_WANTED.items():
+    for our_name, fragments in wanted.items():
         found = False
         for cid, names in epg_channels.items():
             # Buscar en el id y en cada display-name
@@ -167,18 +194,23 @@ def _build_reverse_map(root) -> dict[str, str]:
     return reverse
 
 
-# ── Fuente 1: fetch epgshare01 ────────────────────────────────────────────────
-def _fetch_xmltv_url(url: str) -> tuple[int, set[str]]:
+# ── Fuente 1 y 3: fetch XMLTV (epgshare01 / open-epg) ─────────────────────────
+def _fetch_xmltv_url(url: str, wanted: dict[str, list[str]], source_name: str,
+                      gzipped: bool = True) -> tuple[int, set[str]]:
     """
-    Descarga un archivo XMLTV (.xml.gz), detecta automáticamente los canales
-    mapeados y guarda los programas nuevos.
+    Descarga un archivo XMLTV (comprimido .xml.gz o plano .xml según
+    `gzipped`), detecta automáticamente los canales mapeados en `wanted` y
+    guarda los programas nuevos con source=`source_name` (para distinguir
+    de dónde vino cada uno en "Cobertura almacenada", ver get_coverage_stats).
     Retorna (n_nuevos, set de nombres cubiertos).
     """
     logger.info(f"EPG: descargando {url} …")
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=30) as r:
-            raw = gzip.decompress(r.read())
+            raw = r.read()
+            if gzipped:
+                raw = gzip.decompress(raw)
     except Exception as e:
         logger.error(f"EPG fetch error ({url}): {e}")
         return 0, set()
@@ -189,7 +221,7 @@ def _fetch_xmltv_url(url: str) -> tuple[int, set[str]]:
         logger.error(f"EPG parse error ({url}): {e}")
         return 0, set()
 
-    reverse = _build_reverse_map(root)
+    reverse = _build_reverse_map(root, wanted)
     if not reverse:
         logger.warning(f"EPG: ningún canal mapeado en {url}")
         return 0, set()
@@ -216,8 +248,8 @@ def _fetch_xmltv_url(url: str) -> tuple[int, set[str]]:
             cur = adb.execute("""
                 INSERT OR IGNORE INTO epg_programmes
                     (channel_name, start_ts, stop_ts, title, source)
-                VALUES (?, ?, ?, ?, 'epgshare01')
-            """, (ch_name, start_ts, stop_ts, title))
+                VALUES (?, ?, ?, ?, ?)
+            """, (ch_name, start_ts, stop_ts, title, source_name))
             count += cur.rowcount
         except Exception:
             pass
@@ -232,19 +264,23 @@ def _fetch_xmltv_url(url: str) -> tuple[int, set[str]]:
 
 def fetch_current() -> int:
     """
-    Descarga todos los archivos EPG configurados en EPG_SOURCES.
-    Retorna el total de programas nuevos guardados.
+    Descarga todos los archivos EPG configurados (EPG_SOURCES/epgshare01 +
+    OPENEPG_URL). Retorna el total de programas nuevos guardados.
     """
     total   = 0
     covered: set[str] = set()
 
     for url in EPG_SOURCES:
-        n, ch_set = _fetch_xmltv_url(url)
+        n, ch_set = _fetch_xmltv_url(url, EPGSHARE_WANTED, 'epgshare01', gzipped=True)
         total   += n
         covered |= ch_set
 
+    n, ch_set = _fetch_xmltv_url(OPENEPG_URL, OPENEPG_WANTED, 'open-epg', gzipped=False)
+    total   += n
+    covered |= ch_set
+
     # Canales que siguen sin cobertura tras todas las fuentes
-    wanted_names = set(EPGSHARE_WANTED.keys())
+    wanted_names = set(EPGSHARE_WANTED.keys()) | set(OPENEPG_WANTED.keys())
     missing = wanted_names - covered
     if missing:
         logger.info(
@@ -409,6 +445,52 @@ def refresh_if_needed(db):
                 "INSERT OR REPLACE INTO settings (key,value) VALUES ('epg_tvh_last_fetch',?)",
                 (backoff,)
             )
+        db.commit()
+
+    # Fuente 4: JaliscoTV (cada 12 h) -- scraping no oficial, ver
+    # alerts/jaliscotv.py. Falla en silencio (devuelve 0) sin tumbar las
+    # demás fuentes si el sitio cambia de formato.
+    if _needs_refresh(db, 'epg_jaliscotv_last_fetch', REFRESH_HOURS):
+        try:
+            from alerts.jaliscotv import fetch_range
+            fetch_range(db)
+        except Exception as e:
+            logger.error(f"JaliscoTV EPG: error inesperado: {e}")
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key,value) VALUES ('epg_jaliscotv_last_fetch',?)",
+            (now_str,)
+        )
+        db.commit()
+
+    # Fuente 5: Canal 44 / UDG TV (cada 24 h -- es una plantilla semanal
+    # recurrente, no cambia seguido). Scraping no oficial, ver
+    # alerts/udgtv.py. Falla en silencio sin tumbar las demás fuentes.
+    if _needs_refresh(db, 'epg_udgtv_last_fetch', 24):
+        try:
+            from alerts.udgtv import fetch_range
+            fetch_range(db)
+        except Exception as e:
+            logger.error(f"UDG TV EPG: error inesperado: {e}")
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key,value) VALUES ('epg_udgtv_last_fetch',?)",
+            (now_str,)
+        )
+        db.commit()
+
+    # Fuente 6: JaliscoTV Parlamento, vía la agenda del Congreso de Jalisco
+    # (cada 24 h -- la agenda no cambia varias veces al día). Scraping no
+    # oficial, ver alerts/congresojal.py. Falla en silencio sin tumbar las
+    # demás fuentes.
+    if _needs_refresh(db, 'epg_congresojal_last_fetch', 24):
+        try:
+            from alerts.congresojal import fetch_range
+            fetch_range(db)
+        except Exception as e:
+            logger.error(f"Congreso Jalisco EPG: error inesperado: {e}")
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key,value) VALUES ('epg_congresojal_last_fetch',?)",
+            (now_str,)
+        )
         db.commit()
 
 

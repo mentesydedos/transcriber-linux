@@ -10,10 +10,19 @@
   </div>
 </div>
 
-<div class="card mb-4" style="padding:1rem;background:#000;border-color:var(--border)">
-  <video id="libPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:6px"></video>
+<div class="card mb-4" style="padding:1rem;background:#000;border-color:var(--border);position:relative">
+  <video id="libPlayer" playsinline style="width:100%;max-height:70vh;background:#000;border-radius:6px"></video>
+  <div id="libPlaceholder" style="position:absolute;inset:1rem;display:flex;align-items:center;justify-content:center;
+       color:var(--muted);font-size:.85rem;text-align:center;pointer-events:none">
+    <div><i class="bi bi-collection-play" style="font-size:1.8rem;display:block;margin-bottom:.4rem"></i>
+      Selecciona un bloque de la lista para reproducir.</div>
+  </div>
+  <div id="libClock" style="display:none;position:absolute;top:1.5rem;left:1.5rem;padding:.3rem .6rem;border-radius:6px;
+       background:rgba(0,0,0,.65);color:#fff;font-size:.78rem;font-family:monospace;line-height:1.35;
+       white-space:pre-line;pointer-events:none"></div>
   <div id="libStatus" style="font-size:.78rem;color:var(--text2);margin-top:.5rem;display:none">
-    <i class="bi bi-hourglass-split"></i> Preparando video…
+    <i class="bi bi-hourglass-split"></i> <span id="libStatusText">Preparando video…</span>
+    <button id="libRetry" class="btn btn-sm btn-outline-secondary py-0 px-2 ms-2" style="display:none;font-size:.72rem">Reintentar</button>
   </div>
   <div id="libNowPlaying" style="font-size:.85rem;color:var(--text);margin-top:.5rem;font-weight:600"></div>
 </div>
@@ -58,7 +67,7 @@
 <div id="libBlocks" class="d-flex flex-column" style="gap:.4rem">
   {% for b in blocks %}
   <div class="card lib-block" data-title="{{ b.title or '__sin_epg__' }}"
-       data-file="{{ b.file }}" style="cursor:pointer;padding:.6rem .9rem">
+       data-file="{{ b.file }}" data-time="{{ b.time }}" style="cursor:pointer;padding:.6rem .9rem">
     <div class="d-flex align-items-center" style="gap:.75rem">
       <div style="font-weight:700;color:var(--green);min-width:52px">{{ b.time }}</div>
       <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">
@@ -90,28 +99,89 @@
 
 <script>
 (function () {
-  const player  = document.getElementById('libPlayer');
-  const status  = document.getElementById('libStatus');
-  const nowPlay = document.getElementById('libNowPlaying');
-  const filter  = document.getElementById('libFilter');
-  const numero  = {{ channel.num }};
-  let current   = null;
+  const player      = document.getElementById('libPlayer');
+  const placeholder = document.getElementById('libPlaceholder');
+  const status      = document.getElementById('libStatus');
+  const statusText  = document.getElementById('libStatusText');
+  const retryBtn    = document.getElementById('libRetry');
+  const nowPlay     = document.getElementById('libNowPlaying');
+  const clockEl     = document.getElementById('libClock');
+  const filter      = document.getElementById('libFilter');
+  const numero      = {{ channel.num }};
+  const chName      = {{ channel.name | tojson }};
+  const selDate     = {{ date | tojson }};
+  let current       = null;
+  let stallTimer    = null;
+  let blockStartMs  = null;  // inicio real del bloque (fecha + hora del nombre del archivo), en ms
+
+  function playFile(file, timeStr) {
+    // Los controles nativos (play/pausa, barra) no aparecen hasta que
+    // hay algo real que reproducir -- antes de elegir un bloque se veían
+    // igual aunque no hicieran nada, lo cual confundía (reportado real).
+    player.controls = true;
+    placeholder.style.display = 'none';
+    statusText.textContent = 'Preparando video…';
+    retryBtn.style.display = 'none';
+    status.style.display = '';
+    // "13:30" -> Date local de selDate a esa hora, segundo 0 -- el timer
+    // arranca ahí y avanza con currentTime del video (ver 'timeupdate'),
+    // así que un ffw/rewind lo sincroniza solo, no es un contador aparte.
+    const [hh, mm] = timeStr.split(':').map(Number);
+    const [Y, M, D] = selDate.split('-').map(Number);
+    blockStartMs = new Date(Y, M - 1, D, hh, mm, 0).getTime();
+    clockEl.style.display = '';
+    updateClock();
+    player.src = '/library/video/' + numero + '/' + encodeURIComponent(file);
+    player.load();
+    player.play().catch(function () {});
+    // Si en 20s no llegó a reproducir (el navegador no siempre dispara
+    // 'error' -- una petición que se queda colgada, ej. por un reinicio
+    // del servicio a medias, no dispara ningún evento) se avisa igual y
+    // se ofrece reintentar en vez de dejar "Preparando video..." para
+    // siempre sin ninguna señal (caso real reportado: quedó así sin dar
+    // ningún error).
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(function () {
+      if (player.readyState < 3) showError('Está tardando más de lo normal.');
+    }, 20000);
+  }
+
+  function updateClock() {
+    if (blockStartMs === null) return;
+    const t = new Date(blockStartMs + player.currentTime * 1000);
+    const hh = String(t.getHours()).padStart(2, '0');
+    const mm = String(t.getMinutes()).padStart(2, '0');
+    const ss = String(t.getSeconds()).padStart(2, '0');
+    clockEl.textContent = `${chName}\n${selDate}\n${hh}:${mm}:${ss}`;
+  }
+
+  function showError(msg) {
+    clearTimeout(stallTimer);
+    statusText.textContent = msg || 'No se pudo cargar el video.';
+    retryBtn.style.display = '';
+    status.style.display = '';
+  }
 
   document.querySelectorAll('.lib-block').forEach(function (row) {
     row.addEventListener('click', function () {
       if (current) current.classList.remove('playing');
       current = row;
       row.classList.add('playing');
-      status.style.display = '';
       nowPlay.textContent = row.querySelector('div[style*="flex:1"]').textContent.trim();
-      player.src = '/library/video/' + numero + '/' + encodeURIComponent(row.dataset.file);
-      player.load();
-      player.play().catch(function () {});
+      playFile(row.dataset.file, row.dataset.time);
     });
   });
-  player.addEventListener('canplay', function () { status.style.display = 'none'; });
+  retryBtn.addEventListener('click', function () {
+    if (current) playFile(current.dataset.file, current.dataset.time);
+  });
+  player.addEventListener('canplay', function () { clearTimeout(stallTimer); status.style.display = 'none'; });
   player.addEventListener('waiting', function () { status.style.display = ''; });
-  player.addEventListener('playing', function () { status.style.display = 'none'; });
+  player.addEventListener('playing', function () { clearTimeout(stallTimer); status.style.display = 'none'; });
+  player.addEventListener('timeupdate', updateClock);
+  player.addEventListener('seeked', updateClock);
+  player.addEventListener('error', function () {
+    showError('No se pudo cargar el video (puede que el bloque aún no esté listo).');
+  });
 
   if (filter) {
     filter.addEventListener('change', function () {

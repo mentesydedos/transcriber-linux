@@ -54,8 +54,9 @@
                       style="width:auto;padding:.2rem .6rem"
                       onchange="this.form.submit()"
                       {{ 'disabled' if u.id == session.uid }}>
-                <option value="user"  {{ 'selected' if u.role == 'user'  }}>Usuario</option>
-                <option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option>
+                <option value="user"         {{ 'selected' if u.role == 'user'         }}>Usuario</option>
+                <option value="investigador" {{ 'selected' if u.role == 'investigador' }}>Investigador</option>
+                <option value="admin"        {{ 'selected' if u.role == 'admin'        }}>Admin</option>
               </select>
             </form>
           </td>
