@@ -1,0 +1,13 @@
+[Unit]
+Description=Vigila el estado de los servicios criticos (system_health.py) y alerta por Telegram solo en cambios de estado
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python3 /home/transcriber/transcriber-linux/service_watchdog.py
+TimeoutStartSec=60

@@ -21,6 +21,13 @@ Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
 # Motor Parakeet (transcriber_parakeet.py) en vez de Qwen
 Environment="TRANSCRIBER_ENGINE=parakeet"
 # Batch de inferencia GPU. Subido de 4 a 8 tras el cambio T1000 8GB -> RTX 4070 12GB.
+# NOTA 2026-09-09: se probó bajarlo a 4 durante un incidente de OOM al
+# arrancar radio junto con TV -- NO tuvo ningún efecto (mismo error, misma
+# cifra de memoria). Confirmado en transcriber_parakeet.py: GPU_BATCH_SIZE
+# solo se usa para agrupar inferencias YA con el modelo cargado, no afecta
+# model.to("cuda") (el paso que realmente tronaba). Revertido a 8 -- el
+# problema real es el margen de memoria total con TV corriendo (~1GB de
+# sobra contra ~4.9GB que necesita el único worker de radio), no el batch.
 Environment="TRANSCRIBER_PARAKEET_BATCH=8"
 # Fuente TVHeadend (misma que usaba Qwen). Cambiar a local.m3u tras el cutover.
 Environment="TRANSCRIBER_M3U=TV audio.m3u"
@@ -57,6 +64,12 @@ Environment="TRANSCRIBER_CHUNK_SEC=30"
 # decidir si también necesitan moverse a transcriber-ctc-es.service.
 # Rango numérico en vez de nombres -- ver CHANNEL_ID_MIN/MAX en manager.py.
 Environment="TRANSCRIBER_CHANNEL_ID_MIN=27"
+# Gate anti-OOM: no arranca hasta confirmar que TV (transcriber-ctc-es.service)
+# está realmente produciendo transcripciones -- ver gpu_startup_gate.py. Si
+# ambos motores se caen juntos, esto evita que Restart=always de systemd los
+# vuelva a levantar en paralelo (el mismo escenario del incidente de OOM).
+# Solo stdlib, corre con el python del sistema, sin depender de venv-parakeet.
+ExecStartPre=/usr/bin/python3 /home/transcriber/transcriber-linux/gpu_startup_gate.py
 ExecStart=/home/transcriber/transcriber-linux/venv-parakeet/bin/python manager.py
 Restart=always
 RestartSec=10

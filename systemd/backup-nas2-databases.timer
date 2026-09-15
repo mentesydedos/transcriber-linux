@@ -1,0 +1,9 @@
+[Unit]
+Description=Corre backup-nas2-databases.service todos los dias a las 2:30am
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
