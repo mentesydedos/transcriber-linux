@@ -42,6 +42,12 @@ DOC_API_URL    = 'https://api.gdeltproject.org/api/v2/doc/doc'
 TIMEOUT        = 20
 GDELT_CAP      = 250   # tope real observado del endpoint por consulta
 _RATE_LIMIT_SEC = 5.0  # GDELT pide max 1 consulta cada 5s (429 si se excede)
+# Margen de seguridad -- confirmado real que un rango de fechas que
+# termina 0-2 días antes de "ahora" devuelve vacío por rezago de
+# indexación del DOC API (ver fetch_articles). No se determinó el corte
+# exacto por no seguir gastando cuota de la API en pruebas, así que se
+# usa un margen amplio.
+RECENT_LAG_DAYS = 7
 
 # Idioma: solo inglés/español (sourcelang:) -- los dos que puede leer quien
 # revisa el reporte. Esto SÍ va en la consulta a GDELT.
@@ -110,8 +116,22 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
     devolvía lista vacía silenciosamente -- indistinguible de "sin noticias
     ese día" para quien ve el resultado (confirmado: pasó de verdad con una
     búsqueda real de "sheinbaum"/"méxico" mientras se probaba este módulo a
-    fondo el mismo día)."""
-    full_query = f'{query} {LANGUAGE_FILTER}'
+    fondo el mismo día).
+
+    query puede traer "+" (ej. "independencia+mexico", igual sintaxis que
+    alerts/watcher.py:_match para TV/radio) -- son términos independientes
+    que deben aparecer TODOS, no necesariamente juntos ni en orden. Cada
+    lado del "+" se manda como frase exacta entre comillas -- confirmado
+    con datos reales (2026-09-17): mandar "grito de independencia" SIN
+    comillas (palabras sueltas) hace que GDELT intente exigir cada palabra
+    por separado, y rechaza la consulta completa por tener una palabra de
+    2 letras ("de", "la", etc. -- muy comunes en español) por debajo de su
+    mínimo de longitud. Entre comillas, la frase se evalúa completa, sin
+    ese límite por palabra individual -- y de paso mantiene el mismo
+    significado de "frase exacta" que ya tiene un keyword de varias
+    palabras SIN "+" en TV/radio (ver alerts/watcher.py:_match)."""
+    terms = [t.strip() for t in query.split('+') if t.strip()] or [query]
+    full_query = f'{" ".join(f"\"{t}\"" for t in terms)} {LANGUAGE_FILTER}'
     params = {
         'query':      full_query,
         'mode':       'artlist',
@@ -119,11 +139,24 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
         'sort':       'datedesc',
         'format':     'json',
     }
-    if date_from:
-        params['startdatetime'] = date_from.replace('-', '') + '000000'
-    if date_to:
-        end = (datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y%m%d')
-        params['enddatetime'] = end + '000000'
+    # Confirmado con datos reales (2026-09-17, "grito de independencia"):
+    # pedir un rango con startdatetime/enddatetime que incluya días muy
+    # recientes devuelve '{}' -- vacío, ni siquiera {"articles": []} --
+    # aunque esos MISMOS artículos sí aparecen sin ningún filtro de fecha
+    # (rezago de indexación del lado de GDELT para consultas por rango
+    # explícito, no un bug de este código). Para un rango reciente, se
+    # pide sin filtro de fecha (que sí trae lo último) y se recorta del
+    # lado de Python con el seendate real de cada artículo -- ver el
+    # filtro al final de la función.
+    filter_client_side = False
+    if date_from and date_to:
+        to_dt = datetime.strptime(date_to, '%Y-%m-%d')
+        if (datetime.now() - to_dt).days < RECENT_LAG_DAYS:
+            filter_client_side = True
+        else:
+            params['startdatetime'] = date_from.replace('-', '') + '000000'
+            end = (to_dt + timedelta(days=1)).strftime('%Y%m%d')
+            params['enddatetime'] = end + '000000'
 
     url = f'{DOC_API_URL}?' + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -148,7 +181,19 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
     try:
         data = json.loads(raw)
     except Exception as e:
-        logger.error(f"GDELT: error parseando JSON para '{query}': {e}")
+        # Confirmado con datos reales (2026-09-17, búsqueda "grito de
+        # independencia"): GDELT a veces manda el mismo aviso de tope de
+        # tasa como texto plano con status 200 (no un 429 real), así que
+        # el manejo de HTTPError de arriba no lo detecta -- sin este
+        # reintento, esa consulta se perdía en silencio (devolvía [] sin
+        # avisar que en realidad SÍ había resultados esperando, solo que
+        # el servidor estaba saturado un instante).
+        if _retry and b'limit requests' in raw[:200]:
+            logger.warning(f"GDELT: tope de tasa (200 con texto plano) para '{query}', "
+                            f"reintentando en {_RATE_LIMIT_SEC + 1}s...")
+            time.sleep(_RATE_LIMIT_SEC + 1)
+            return fetch_articles(query, date_from, date_to, _retry=False)
+        logger.error(f"GDELT: error parseando JSON para '{query}': {e} -- respuesta: {raw[:200]!r}")
         return []
 
     out = []
@@ -192,6 +237,11 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
             # alerts/media_countries.py y alerts/watcher.py).
             'country':       (art.get('sourcecountry') or '').strip() or None,
         })
+
+    if filter_client_side:
+        from_dt = datetime.strptime(date_from, '%Y-%m-%d')
+        to_dt_excl = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
+        out = [a for a in out if from_dt <= a['published'] < to_dt_excl]
     return out
 
 

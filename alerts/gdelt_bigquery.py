@@ -189,10 +189,16 @@ def _parse_gkg_dt(raw) -> datetime:
     return dt_utc.astimezone().replace(tzinfo=None)
 
 
-def _query_gkg(client, kw_regex: str, dt_from: datetime, dt_to: datetime) -> list:
+def _query_gkg(client, kw_regexes: list[str], dt_from: datetime, dt_to: datetime) -> list:
     """Una sola consulta -- dt_from/dt_to acotan tanto la partición
     (_PARTITIONTIME, para costo) como el campo DATE (para el rango de hora
     real dentro del día, usado por la bisección).
+
+    kw_regexes: uno o más patrones (ver fetch_articles, keyword con "+" --
+    misma sintaxis que alerts/watcher.py:_match para TV/radio). Con más de
+    uno, se exige que TODOS aparezcan (en cualquiera de los 4 campos, no
+    necesariamente el mismo) -- un grupo OR-de-4-campos por término, y los
+    términos ANDados entre sí.
 
     Dos filtros clave, ausentes hasta ahora:
     - Idioma: TranslationInfo trae 'srclc:<idioma origen>' cuando GDELT
@@ -220,6 +226,15 @@ def _query_gkg(client, kw_regex: str, dt_from: datetime, dt_to: datetime) -> lis
     from google.cloud import bigquery
     def _noacc(field: str) -> str:
         return f"REGEXP_REPLACE(NORMALIZE(LOWER({field}), NFD), r'\\p{{Mn}}', '')"
+    term_conds = []
+    params = []
+    for i, kw_regex in enumerate(kw_regexes):
+        pname = f'kw{i}'
+        term_conds.append(
+            f"(REGEXP_CONTAINS({_noacc('V2Persons')}, @{pname}) OR REGEXP_CONTAINS({_noacc('V2Organizations')}, @{pname})"
+            f" OR REGEXP_CONTAINS({_noacc('AllNames')}, @{pname}) OR REGEXP_CONTAINS({_noacc('V2Themes')}, @{pname}))"
+        )
+        params.append(bigquery.ScalarQueryParameter(pname, 'STRING', kw_regex))
     sql = f"""
         SELECT DATE, SourceCommonName, DocumentIdentifier,
                V2Persons, V2Organizations, V2Themes, V2Locations, V2Tone,
@@ -228,13 +243,11 @@ def _query_gkg(client, kw_regex: str, dt_from: datetime, dt_to: datetime) -> lis
         WHERE DATE(_PARTITIONTIME) BETWEEN @day_from AND @day_to
           AND DATE >= @dt_from AND DATE < @dt_to
           AND (TranslationInfo IS NULL OR REGEXP_CONTAINS(TranslationInfo, r'srclc:spa'))
-          AND (REGEXP_CONTAINS({_noacc('V2Persons')}, @kw) OR REGEXP_CONTAINS({_noacc('V2Organizations')}, @kw)
-               OR REGEXP_CONTAINS({_noacc('AllNames')}, @kw) OR REGEXP_CONTAINS({_noacc('V2Themes')}, @kw))
+          AND {' AND '.join(term_conds)}
         ORDER BY DATE DESC
         LIMIT {ROW_LIMIT}
     """
-    params = [
-        bigquery.ScalarQueryParameter('kw', 'STRING', kw_regex),
+    params += [
         bigquery.ScalarQueryParameter('day_from', 'DATE', dt_from.date().isoformat()),
         bigquery.ScalarQueryParameter('day_to', 'DATE', dt_to.date().isoformat()),
         bigquery.ScalarQueryParameter('dt_from', 'INT64', int(dt_from.strftime('%Y%m%d%H%M%S'))),
@@ -248,7 +261,7 @@ def _query_gkg(client, kw_regex: str, dt_from: datetime, dt_to: datetime) -> lis
         return []
 
 
-def _query_gkg_bisect(client, kw_regex: str, dt_from: datetime, dt_to: datetime, _depth: int = 0) -> list:
+def _query_gkg_bisect(client, kw_regexes: list[str], dt_from: datetime, dt_to: datetime, _depth: int = 0) -> list:
     """Si la consulta topa ROW_LIMIT, ORDER BY DATE DESC descarta en
     silencio todo lo más viejo de la ventana -- para una palabra frecuente
     (ej. "mexico": 1495 menciones/día reales) eso dejaba huecos de horas
@@ -256,13 +269,13 @@ def _query_gkg_bisect(client, kw_regex: str, dt_from: datetime, dt_to: datetime,
     porque se cortaba. Se bisecta el rango de tiempo a la mitad y se repite
     hasta que quepa completo o hasta MIN_BISECT_MINUTES (piso real de
     actualización del GKG)."""
-    rows = _query_gkg(client, kw_regex, dt_from, dt_to)
+    rows = _query_gkg(client, kw_regexes, dt_from, dt_to)
     span_min = (dt_to - dt_from).total_seconds() / 60
     if len(rows) < ROW_LIMIT or span_min <= MIN_BISECT_MINUTES or _depth > 20:
         return rows
     mid = dt_from + (dt_to - dt_from) / 2
-    left  = _query_gkg_bisect(client, kw_regex, dt_from, mid, _depth + 1)
-    right = _query_gkg_bisect(client, kw_regex, mid, dt_to, _depth + 1)
+    left  = _query_gkg_bisect(client, kw_regexes, dt_from, mid, _depth + 1)
+    right = _query_gkg_bisect(client, kw_regexes, mid, dt_to, _depth + 1)
     return left + right
 
 
@@ -293,8 +306,16 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
     # comparan ya sin acentos (REGEXP_CONTAINS distingue mayúsculas Y
     # acentos, a diferencia de la búsqueda local que ya es accent-
     # insensitive por default, ver alerts/watcher.py:_strip_accents).
-    kw_regex = r'\b' + re.escape(_strip_accents(query.lower())) + r'\b'
-    rows = _query_gkg_bisect(client, kw_regex, dt_from, dt_to)
+    #
+    # query puede traer "+" -- varios términos que deben aparecer TODOS
+    # (en cualquier campo, no necesariamente el mismo ni juntos), misma
+    # sintaxis que alerts/watcher.py:_match para TV/radio. Antes cada "+"
+    # se escapaba como parte de UN solo patrón literal (nunca aparece así
+    # en un artículo real, esa keyword no encontraba nada -- confirmado
+    # con "independencia+mexico", 2026-09-17).
+    terms = [t.strip() for t in query.split('+') if t.strip()] or [query]
+    kw_regexes = [r'\b' + re.escape(_strip_accents(t.lower())) + r'\b' for t in terms]
+    rows = _query_gkg_bisect(client, kw_regexes, dt_from, dt_to)
 
     parsed = []
     for row in rows:

@@ -2,7 +2,7 @@
 alerts/media_countries.py — De dónde es cada medio que aparece en resultados
 de GDELT, para mostrarlo en "top canales" (search_detail.html).
 
-Dos fuentes de datos, de mejor a peor:
+Fuentes de datos, de mejor a peor:
 1. sourcecountry del DOC API (alerts/gdelt.py) -- GDELT ya lo calcula y nos
    lo manda gratis con cada artículo; antes se usaba solo para clasificar
    nacional/internacional y se descartaba. Es exacto.
@@ -12,10 +12,23 @@ Dos fuentes de datos, de mejor a peor:
    alerts/gdelt_bigquery.py, que no trae ese campo). Se amplía a mano
    conforme aparezcan dominios frecuentes sin país identificado -- ver
    country_for() y el fallback de terminación de dominio.
+3. Nombre de página de Facebook/Instagram (PAGE_NAME_COUNTRY) -- para
+   estos dos dominios, "el dominio" siempre es "facebook.com"/
+   "instagram.com" sin importar quién publicó, así que no dice nada del
+   país real. Muchos medios (sobre todo locales mexicanos) publican
+   directo en una página de Facebook sin sitio propio -- Google Noticias
+   sí indexa esas publicaciones. El texto de la publicación normalmente
+   empieza con "Nombre de la página. . <contenido>" -- se extrae ese
+   nombre y se busca en una tabla curada aparte (confirmado con datos
+   reales: "Exitosa Noticias" es de Perú, no de México, a pesar de
+   aparecer en búsquedas de política mexicana). Sin ese patrón reconocible,
+   se deja sin país en vez de asumir que toda mención de Facebook/
+   Instagram es del mismo país que la búsqueda que la trajo.
 
 Nunca hay necesidad de una consulta extra por esto -- todo sale de datos
 que ya se bajan o de tablas estáticas.
 """
+import re
 
 # GDELT (DOC API) devuelve el nombre del país en inglés -- se traducen los
 # más frecuentes para que no se mezclen idiomas en la misma columna de la
@@ -240,7 +253,7 @@ _US_DOMAINS = [
     'wdtimes.com', 'khaama.com',
 ]
 for _d in _US_DOMAINS:
-    DOMAIN_COUNTRY.setdefault(_d, 'Estados Unidos')
+    DOMAIN_COUNTRY.setdefault(_d[4:] if _d.startswith('www.') else _d, 'Estados Unidos')
 
 # "Edición país" de una misma red de sitios (tipo bignewsnetwork.com) --
 # el nombre del dominio nombra el país que cubre esa edición.
@@ -267,7 +280,119 @@ _COUNTRY_EDITION_DOMAINS = {
     'africaleader.com': 'Kenia', 'globalsecurity.org': 'Estados Unidos',
 }
 for _d, _c in _COUNTRY_EDITION_DOMAINS.items():
-    DOMAIN_COUNTRY.setdefault(_d, _c)
+    DOMAIN_COUNTRY.setdefault(_d[4:] if _d.startswith('www.') else _d, _c)
+
+# ── Segunda pasada sobre los ~318 dominios sin país (2026-09-17) ──
+_SECOND_PASS = {
+    # México (medios locales por estado/ciudad, o conocidos)
+    'www.xevt.com': 'México', 'mexiquensedigital.com': 'México', 'hoytamaulipas.net': 'México',
+    'www.hoytamaulipas.net': 'México', 'criteriohidalgo.com': 'México', 'www.tabascohoy.com': 'México',
+    'elpuntocritico.com': 'México', 'www.elnorte.com': 'México', 'intoleranciadiario.com': 'México',
+    'adnsureste.info': 'México', 'expresszacatecas.com': 'México', 'changoonga.com': 'México',
+    'oncenoticias.digital': 'México', 'elvigia.net': 'México', 'almomento.net': 'México',
+    'www.uniradioinforma.com': 'México', 'notigape.com': 'México', 'lajornadahidalgo.com': 'México',
+    'lajornadaestadodemexico.com': 'México', 'heraldodepuebla.com': 'México', 'calibre800.com': 'México',
+    'www.uniradiobaja.com': 'México', 'www.laquerelladigital.com': 'México',
+    'www.vertigopolitico.com': 'México', 'ntrzacatecas.com': 'México', 'masnoticias.net': 'México',
+    'elsoldechiapas.com': 'México', 'www.animalpolitico.com': 'México', 'vanguardiaveracruz.com': 'México',
+    'elcoahuilense.com': 'México', 'diariotijuana.info': 'México', 'codigosanluis.com': 'México',
+    'cmic.org': 'México', 'nsintesis.com': 'México', 'mx.investing.com': 'México',
+    'mexicostar.com': 'México', 'lucesdelsiglo.com': 'México', 'letraslibres.com': 'México',
+    'laverdadnoticias.com': 'México', 'nayaritnoticias.com': 'México', 'diariojudio.com': 'México',
+    'diariodemorelos.com': 'México', 'www.diariodemorelos.com': 'México', 'diariodechiapas.com': 'México',
+    'diarioacayucan.com': 'México', 'desinformemonos.org': 'México', 'congresomich.site': 'México',
+    'christus.jesuitasmexico.org': 'México', 'cdmx.info': 'México', 'banderasnews.com': 'México',
+    'alcalorpolitico.com': 'México', 'sucesospuebla.com': 'México', 'traficozmg.com': 'México',
+    'tribunacampeche.com': 'México', 'riviera-maya-news.com': 'México', 'gringogazette.com': 'México',
+    'fortunaypoder.com': 'México', 'emprendedor.com': 'México', 'ellugareno.com': 'México',
+    'www.expoknews.com': 'México', 'www.hidrocalidodigital.com': 'México', 'hidrocalidodigital.com': 'México',
+    'www.colimanoticias.com': 'México', 'vanguardia.com.mx': 'México',
+    # Estados Unidos
+    'dailylobo.com': 'Estados Unidos', 'bostonherald.com': 'Estados Unidos',
+    'thetimes-tribune.com': 'Estados Unidos', 'soundersfc.com': 'Estados Unidos',
+    'sounderatheart.com': 'Estados Unidos', 'reporterherald.com': 'Estados Unidos',
+    'pressdemocrat.com': 'Estados Unidos', 'hawaiitelegraph.com': 'Estados Unidos',
+    'f4wonline.com': 'Estados Unidos', 'diariolasamericas.com': 'Estados Unidos',
+    'www.diariolasamericas.com': 'Estados Unidos', 'y94.com': 'Estados Unidos',
+    'www.psychologytoday.com': 'Estados Unidos', 'www.icrc.org': 'Suiza', 'vix.com': 'Estados Unidos',
+    'the-messenger.com': 'Estados Unidos', 'stlouisstar.com': 'Estados Unidos', 'sbsun.com': 'Estados Unidos',
+    'ibtimes.com': 'Estados Unidos', 'froggyweb.com': 'Estados Unidos', 'foxrochester.com': 'Estados Unidos',
+    'fox56.com': 'Estados Unidos', 'fox10phoenix.com': 'Estados Unidos', 'eldiariony.com': 'Estados Unidos',
+    'deadline.com': 'Estados Unidos', 'clevelandstar.com': 'Estados Unidos', 'zerohedge.com': 'Estados Unidos',
+    'www.elnuevoherald.com': 'Estados Unidos', 'wapa.tv': 'Puerto Rico', 'vtcng.com': 'Estados Unidos',
+    'valleynewslive.com': 'Estados Unidos', 'theoaklandpress.com': 'Estados Unidos',
+    'techrepublic.com': 'Estados Unidos', 'suntimes.com': 'Estados Unidos', 'sunny943.com': 'Estados Unidos',
+    'suncommercial.com': 'Estados Unidos', 'stmarys-ca.edu': 'Estados Unidos', 'sitkasentinel.com': 'Estados Unidos',
+    'shockya.com': 'Estados Unidos', 'seekingalpha.com': 'Estados Unidos', 'realitytvworld.com': 'Estados Unidos',
+    'prnewswire.com': 'Estados Unidos', 'presstelegram.com': 'Estados Unidos', 'power96radio.com': 'Estados Unidos',
+    'postandcourier.com': 'Estados Unidos', 'popcrush.com': 'Estados Unidos', 'nextplatform.com': 'Estados Unidos',
+    'netsdaily.com': 'Estados Unidos', 'naturalnews.com': 'Estados Unidos', 'mmafighting.com': 'Estados Unidos',
+    'mix108.com': 'Estados Unidos', 'mix1069.com': 'Estados Unidos', 'midutahradio.com': 'Estados Unidos',
+    'mendocinobeacon.com': 'Estados Unidos', 'memphissun.com': 'Estados Unidos', 'medicaldaily.com': 'Estados Unidos',
+    'martinoticias.com': 'Estados Unidos', 'marinelink.com': 'Estados Unidos', 'instinctmagazine.com': 'Estados Unidos',
+    'inforum.com': 'Estados Unidos', 'ilovebobfm.com': 'Estados Unidos', 'eurasiareview.com': 'Estados Unidos',
+    'es.qz.com': 'Estados Unidos', 'es.mongabay.com': 'Estados Unidos', 'elplaneta.com': 'Estados Unidos',
+    'editorials.voa.gov': 'Estados Unidos', 'dentonrc.com': 'Estados Unidos', 'coyote1025.com': 'Estados Unidos',
+    'cleantechnica.com': 'Estados Unidos', 'circleofblue.org': 'Estados Unidos', 'businessden.com': 'Estados Unidos',
+    'baylorlariat.com': 'Estados Unidos', 'batonrougepost.com': 'Estados Unidos', 'bamahammer.com': 'Estados Unidos',
+    'baltimorestar.com': 'Estados Unidos', 'bakersfieldnow.com': 'Estados Unidos', 'angelusnews.com': 'Estados Unidos',
+    'agrinews-pubs.com': 'Estados Unidos', 'aginfo.net': 'Estados Unidos', 'knopnews2.com': 'Estados Unidos',
+    'hometownregister.com': 'Estados Unidos', 'mesabitribune.com': 'Estados Unidos',
+    'the-sun.com': 'Estados Unidos',
+    # España
+    'www.pikaramagazine.com': 'España', 'www.zendalibros.com': 'España', 'www.xataka.com': 'España',
+    'www.unir.net': 'España', 'www.redaccionmedica.com': 'España', 'redaccionmedica.com': 'España',
+    'www.mundiario.com': 'España', 'mundiario.com': 'España', 'www.elnacional.cat': 'España',
+    'www.eldebate.com': 'España', 'www.cubainformacion.tv': 'España', 'www.cidob.org': 'España',
+    'www.ansalatina.com': 'España', 'tribunafeminista.org': 'España', 'siguenzacomunica.com': 'España',
+    'segib.org': 'España', 'notimerica.com': 'España', 'monterrassa.cat': 'España',
+    'mundodeportivo.com': 'España', 'infodefensa.com': 'España', 'efeminista.com': 'España',
+    'diariocordoba.com': 'España', 'agrodigital.com': 'España',
+    # Argentina
+    'www.resumenlatinoamericano.org': 'Argentina', 'radionotas.com': 'Argentina',
+    'ecoportal.net': 'Argentina', 'corrienteshoy.com': 'Argentina', 'agencianova.com': 'Bolivia',
+    'starmedia.com': 'Argentina', 'eldia.com': 'Argentina', 'vanguardia.com': 'Colombia',
+    # Otros países de LatAm/Caribe
+    'www.rumbominero.com': 'Perú', 'diariosigloxxi.com': 'Perú', 'aciprensa.com': 'Perú',
+    'www.nacion.com': 'Costa Rica', 'culturacr.net': 'Costa Rica', 'revistaeyn.com': 'Honduras',
+    'radioamerica.net': 'Honduras', 'emisorasunidas.com': 'Guatemala', 'www.articulo7.net': 'Nicaragua',
+    'diariocolatino.com': 'El Salvador', 'meridiano.net': 'Venezuela', 'www.caf.com': 'Venezuela',
+    'eluniversal.com': 'Venezuela', 'www.ntn24.com': 'Colombia', 'diariodelhuila.com': 'Colombia',
+    'latinamericanpost.com': 'Colombia', 'elperiodicodelecuador.com': 'Ecuador', 'lacuarta.com': 'Chile',
+    'cnnchile.com': 'Chile',
+    # Internacional (resto del mundo)
+    'el-balad.com': 'Egipto', 'www.nippon.com': 'Japón', 'miragenews.com': 'Australia',
+    'sciencealert.com': 'Australia', 'www.trtespanol.com': 'Turquía', 'www.pressenza.com': 'Italia',
+    'artribune.com': 'Italia', 'www.greenpeace.org': 'Países Bajos', 'bnonews.com': 'Países Bajos',
+    'www.europarl.europa.eu': 'Bélgica', 'euractiv.com': 'Bélgica', 'es.marketscreener.com': 'Francia',
+    'internationalviewpoint.org': 'Francia', 'www.aps.dz': 'Argelia', 'amandala.com.bz': 'Belice',
+    'advocate-news.com': 'Barbados', 'es.zenit.org': 'Ciudad del Vaticano', 'thecattlesite.com': 'Reino Unido',
+    'thepoultrysite.com': 'Reino Unido', 'www.independentespanol.com': 'Reino Unido',
+    'middleeastmonitor.com': 'Reino Unido', 'irishsun.com': 'Irlanda', 'hotpress.com': 'Irlanda',
+    'hellenicshippingnews.com': 'Grecia', 'thedailystar.net': 'Bangladés', 'prokerala.com': 'India',
+    'openthemagazine.com': 'India', 'yam.com': 'Taiwán', 'cnfol.com': 'China', '163.com': 'China',
+    'diario1.com': 'Perú',
+    # Tercera pasada
+    'www.bloomberglinea.com': 'Estados Unidos', 'riotimesonline.com': 'Brasil',
+    'mimorelia.com': 'México', 'latintimes.com': 'Estados Unidos', 'tickerreport.com': 'Estados Unidos',
+    'themarketsdaily.com': 'Estados Unidos', 'www.reportur.com': 'Argentina',
+    'insightcrime.org': 'Estados Unidos', 'colombia.com': 'Colombia', 'www.businesswire.com': 'Estados Unidos',
+    'argentinastar.com': 'Argentina', 'americaeconomica.com': 'España', 'laosnews.net': 'Laos',
+    # Verificados por el usuario (búsqueda directa, 2026-09-17)
+    'abriendobrecha.tv': 'Honduras',
+    # Verificados con búsqueda web, cola de revisión (2026-09-17)
+    'periodicocontacto.com': 'México', 'billieparkernoticias.com': 'México',
+    'kioscomayor.com': 'México', 'alcanzandoelconocimiento.com': 'México',
+    'revista-mujeres.com': 'México', 'revistaespejo.com': 'México', 'lineapolitica.com': 'México',
+    'holanews.com': 'Estados Unidos', 'tv4noticias.com': 'México', 'binoticias.com': 'México',
+    'certezadiario.com': 'México', 'rosyramales.com': 'México', 'infolliteras.com': 'México',
+    'peninsulardigital.com': 'México', 'acento21.com': 'México', 'periodicomirador.com': 'México',
+    'acustiknoticias.com': 'México', 'diario-red.com': 'España', 'lineadecontraste.com': 'México',
+    'eslocotidiano.com': 'México', 'emsavalles.com': 'México', 'futbolsapiens.com': 'México',
+    'elpreg.org': 'Estados Unidos', 'somoselmedio.com': 'México', 'josecardenas.com': 'México',
+}
+for _d, _c in _SECOND_PASS.items():
+    DOMAIN_COUNTRY.setdefault(_d[4:] if _d.startswith('www.') else _d, _c)
 
 # Respaldo final por terminación de dominio (ccTLD) -- menos preciso (un
 # .com puede ser de cualquier país) pero mejor que nada para lo que no
@@ -291,10 +416,36 @@ TLD_COUNTRY = {
 }
 
 
-def country_for(domain: str | None, sourcecountry: str | None = None) -> str | None:
+# Facebook/Instagram: el "dominio" nunca dice de dónde es la página real
+# que publicó -- se identifica por el nombre de la página, extraído del
+# inicio del texto publicado ("Nombre de la página. . contenido...").
+# Confirmado con datos reales (búsquedas de política mexicana):
+# "Exitosa Noticias" es de Perú, no de México -- justo el tipo de mención
+# que se colaría con un país equivocado si se asumiera "misma búsqueda,
+# mismo país".
+SOCIAL_DOMAINS = {'facebook.com', 'instagram.com'}
+PAGE_NAME_COUNTRY = {
+    'milenio': 'México', 'el universal': 'México', 'claudia sheinbaum pardo': 'México',
+    'rocío nahle': 'México', 'bi noticias': 'México', 'exitosa noticias': 'Perú',
+}
+_PAGE_NAME_RE = re.compile(r'^([^.]{2,40})\.\s*\.\s*')
+
+
+def _extract_page_name(text: str | None) -> str | None:
+    if not text:
+        return None
+    m = _PAGE_NAME_RE.match(text)
+    return m.group(1).strip().lower() if m else None
+
+
+def country_for(domain: str | None, sourcecountry: str | None = None,
+                 text: str | None = None) -> str | None:
     """País de un medio -- ver docstring del módulo para el orden de
     prioridad. None si no se pudo determinar por ningún camino (queda
-    pendiente de agregar a la tabla curada a mano)."""
+    pendiente de agregar a la tabla curada a mano).
+    text: título/contenido de la publicación -- solo se usa para
+    Facebook/Instagram, donde el dominio no sirve de nada (ver
+    SOCIAL_DOMAINS)."""
     if sourcecountry:
         key = sourcecountry.strip().lower()
         return EN_COUNTRY_ES.get(key, sourcecountry.strip())
@@ -303,6 +454,9 @@ def country_for(domain: str | None, sourcecountry: str | None = None) -> str | N
         domain = domain[4:]
     if not domain:
         return None
+    if domain in SOCIAL_DOMAINS:
+        name = _extract_page_name(text)
+        return PAGE_NAME_COUNTRY.get(name) if name else None
     if domain in DOMAIN_COUNTRY:
         return DOMAIN_COUNTRY[domain]
     # Subdominios de un medio ya curado -- "amp.milenio.com",

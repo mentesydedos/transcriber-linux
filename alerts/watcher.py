@@ -355,7 +355,7 @@ def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[s
             # alerts/gdelt.py), aproximado por tabla curada/TLD si no (ver
             # alerts/media_countries.py). Solo aplica a fuentes externas
             # (news/gdelt); TV/radio no pasa por aquí.
-            country = country_for(art.get('source_domain'), art.get('country'))
+            country = country_for(art.get('source_domain'), art.get('country'), art.get('title'))
             cur = adb.execute("""INSERT OR IGNORE INTO matches
                 (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain, extra_data, channel_country)
                 VALUES (?,?,?,?,?,?,?,?,?,?)""",

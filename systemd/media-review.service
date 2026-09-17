@@ -1,0 +1,13 @@
+[Unit]
+Description=Detecta medios/paginas de Facebook-Instagram nuevos sin pais identificado y los encola para revision (alerts/media_countries.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=transcriber
+Group=transcriber
+WorkingDirectory=/home/transcriber/transcriber-linux
+Environment="PATH=/home/transcriber/transcriber-linux/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/transcriber/transcriber-linux/venv/bin/python3 /home/transcriber/transcriber-linux/media_review_job.py
+TimeoutStartSec=120

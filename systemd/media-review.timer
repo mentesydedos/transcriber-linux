@@ -1,0 +1,14 @@
+[Unit]
+Description=Corre media-review.service una vez por noche, en la ventana de baja actividad (00:30-05:00)
+
+[Timer]
+# Hora fija dentro de la ventana pedida (00:30-05:00) -- no por urgencia,
+# es una tarea de solo lectura + un par de escrituras chicas a alerts.db,
+# se corre de noche solo para no competir por recursos con el watcher/
+# transcripcion en vivo sin ninguna necesidad real de hacerlo.
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
