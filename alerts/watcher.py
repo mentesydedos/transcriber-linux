@@ -22,6 +22,7 @@ from alerts.epg            import refresh_if_needed as epg_refresh, ensure_schem
 from alerts.channel_types  import channel_type, parse_media_types, NEWS_CHANNEL_ID, YOUTUBE_CHANNEL_ID, GDELT_CHANNEL_ID
 from alerts.googlenews     import fetch_articles as gnews_fetch, fetch_articles_range
 from alerts.gdelt          import fetch_articles as gdelt_fetch, fetch_articles_range as gdelt_fetch_range
+from alerts.media_countries import country_for
 
 logger = logging.getLogger('watcher')
 
@@ -350,11 +351,16 @@ def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[s
             # alerts/gdelt_bigquery.py); NULL para todo lo demás.
             extra = art.get('extra_data')
             extra_json = json.dumps(extra, ensure_ascii=False) if extra else None
+            # País del medio -- exacto si viene de GDELT (sourcecountry, ver
+            # alerts/gdelt.py), aproximado por tabla curada/TLD si no (ver
+            # alerts/media_countries.py). Solo aplica a fuentes externas
+            # (news/gdelt); TV/radio no pasa por aquí.
+            country = country_for(art.get('source_domain'), art.get('country'))
             cur = adb.execute("""INSERT OR IGNORE INTO matches
-                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain, extra_data)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (search_id, keyword, channel_id, channel_name, timestamp, matched_text, source_url, channel_domain, extra_data, channel_country)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (s['id'], kw, art_channel_id, art['source'], ts, art['title'], art['link'],
-                 art.get('source_domain'), extra_json))
+                 art.get('source_domain'), extra_json, country))
             total += cur.rowcount
     return total
 

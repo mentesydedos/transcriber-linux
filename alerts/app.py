@@ -586,6 +586,14 @@ def _init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        # País del medio de origen -- solo aplica a Google Noticias/GDELT
+        # (channel_country en alerts/watcher.py, ver alerts/media_countries.py
+        # para de dónde sale el valor). NULL para TV/radio/YouTube.
+        conn.execute("ALTER TABLE matches ADD COLUMN channel_country TEXT")
+        conn.commit()
+    except Exception:
+        pass
     # Eliminar duplicados antes de crear el índice único.
     #
     # BUG corregido (2026-09-10): el índice original agrupaba solo por
@@ -1073,11 +1081,13 @@ def create_app() -> Flask:
                                default_media_types=set(DEFAULT_MEDIA_TYPES.split(',')),
                                channel_choices=_tv_radio_channels())
 
-    def _match_where(sid, kws, chs, pfs, mts, date_from, date_to):
+    def _match_where(sid, kws, chs, pfs, mts, date_from, date_to, cofs=None):
         """Construye WHERE + params para la tabla matches con todos los filtros activos.
         mts: subconjunto de {'tv','radio','news','youtube','gdelt'} -- channel_kind no es una
         columna real (se deriva de channel_id, ver alerts/channel_types.py), así que se
-        arma el mismo rango/valor por SQL en vez de re-consultar fila por fila."""
+        arma el mismo rango/valor por SQL en vez de re-consultar fila por fila.
+        cofs: países (channel_country) -- solo aplica a Google Noticias/GDELT,
+        ver alerts/media_countries.py; TV/radio/YouTube no tienen ese dato."""
         conds, params = ['search_id=?'], [sid]
         if kws:
             conds.append(f"keyword IN ({','.join('?'*len(kws))})")
@@ -1127,6 +1137,9 @@ def create_app() -> Flask:
                   AND e.title IN ({','.join('?'*len(pfs))})
             )""")
             params.extend(pfs)
+        if cofs:
+            conds.append(f"channel_country IN ({','.join('?'*len(cofs))})")
+            params.extend(cofs)
         return ' AND '.join(conds), params
 
     @app.route('/searches/<int:sid>')
@@ -1143,10 +1156,11 @@ def create_app() -> Flask:
         cfs       = request.args.getlist('ch')
         pfs       = request.args.getlist('prog')
         mfs       = request.args.getlist('mt')
+        cofs      = request.args.getlist('co')
         date_from = request.args.get('date_from', '')
         date_to   = request.args.get('date_to', '')
 
-        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to, cofs)
 
         d         = db()
         total     = d.execute(f"SELECT COUNT(*) FROM matches WHERE {where}", params).fetchone()[0]
@@ -1168,6 +1182,11 @@ def create_app() -> Flask:
         matches.sort(key=lambda m: m['precise_timestamp'] or '', reverse=True)
         kw_all = d.execute("SELECT DISTINCT keyword FROM matches WHERE search_id=? ORDER BY keyword", (sid,)).fetchall()
         ch_all = d.execute("SELECT DISTINCT channel_name FROM matches WHERE search_id=? ORDER BY channel_name", (sid,)).fetchall()
+        # Solo aplica a Google Noticias/GDELT (ver alerts/media_countries.py)
+        # -- una búsqueda de solo TV/radio no tendrá ningún país, el filtro
+        # simplemente no aparece (ver search_detail.html).
+        co_all = d.execute("""SELECT DISTINCT channel_country FROM matches
+            WHERE search_id=? AND channel_country IS NOT NULL ORDER BY channel_country""", (sid,)).fetchall()
         # Solo los medios que esta búsqueda realmente cubre (s.media_types) --
         # mostrar "YouTube" como filtro en una búsqueda que nunca lo monitorea
         # daría un filtro que siempre vacía la tabla.
@@ -1197,7 +1216,8 @@ def create_app() -> Flask:
             f"SELECT keyword, COUNT(*) cnt FROM matches WHERE {where} GROUP BY keyword ORDER BY cnt DESC", params
         ).fetchall()
         ch_stats = d.execute(
-            f"SELECT channel_name, COUNT(*) cnt FROM matches WHERE {where} GROUP BY channel_name ORDER BY cnt DESC", params
+            f"""SELECT channel_name, MAX(channel_country) AS channel_country, COUNT(*) cnt
+                FROM matches WHERE {where} GROUP BY channel_name ORDER BY cnt DESC""", params
         ).fetchall()
 
         # Heatmap: una fila por fecha real (date_start … hoy o date_end)
@@ -1249,8 +1269,8 @@ def create_app() -> Flask:
             s=s, keywords=json.loads(s['keywords']),
             matches=matches, total=total, page=page, pp=pp,
             pages=max(1, (total-1)//pp+1),
-            kw_all=kw_all, ch_all=ch_all, prog_all=prog_all, mt_all=mt_all,
-            kfs=kfs, cfs=cfs, pfs=pfs, mfs=mfs,
+            kw_all=kw_all, ch_all=ch_all, prog_all=prog_all, mt_all=mt_all, co_all=co_all,
+            kfs=kfs, cfs=cfs, pfs=pfs, mfs=mfs, cofs=cofs,
             date_from=date_from, date_to=date_to,
             total_all=total_all,
             kw_stats=kw_stats, ch_stats=ch_stats,
@@ -1809,9 +1829,10 @@ def create_app() -> Flask:
         cfs       = request.form.getlist('ch')
         pfs       = request.form.getlist('prog')
         mfs       = request.form.getlist('mt')
+        cofs      = request.form.getlist('co')
         date_from = request.form.get('date_from', '')
         date_to   = request.form.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to, cofs)
         d       = db()
         matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC", params).fetchall()
         rows    = d.execute("SELECT key,value FROM settings").fetchall()
@@ -1835,9 +1856,10 @@ def create_app() -> Flask:
         cfs       = request.form.getlist('ch')
         pfs       = request.form.getlist('prog')
         mfs       = request.form.getlist('mt')
+        cofs      = request.form.getlist('co')
         date_from = request.form.get('date_from', '')
         date_to   = request.form.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to, cofs)
         d       = db()
         matches = d.execute(f"SELECT * FROM matches WHERE {where} ORDER BY timestamp DESC", params).fetchall()
         cfg     = {r['key']: r['value'] for r in d.execute("SELECT key,value FROM settings")}
@@ -2140,9 +2162,10 @@ def create_app() -> Flask:
         cfs       = request.args.getlist('ch')
         pfs       = request.args.getlist('prog')
         mfs       = request.args.getlist('mt')
+        cofs      = request.args.getlist('co')
         date_from = request.args.get('date_from', '')
         date_to   = request.args.get('date_to', '')
-        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+        where, params = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to, cofs)
 
         if after_id is not None:
             rows = d.execute(
@@ -2256,7 +2279,7 @@ def create_app() -> Flask:
     # ══════════════════════════════════════════════════════════════
     # EXPORTAR A EXCEL
     # ══════════════════════════════════════════════════════════════
-    def _run_export_job(job_id, search_ids, single, kfs, cfs, pfs, mfs, date_from, date_to):
+    def _run_export_job(job_id, search_ids, single, kfs, cfs, pfs, mfs, date_from, date_to, cofs=None):
         """Corre en un hilo aparte (ver export()) -- arma el Workbook fuera
         del ciclo petición/respuesta de Nginx, que corta a los 60s (ver
         búsquedas grandes como 'sheinbaum', con miles de coincidencias).
@@ -2271,8 +2294,8 @@ def create_app() -> Flask:
                 s = jd.execute("SELECT * FROM searches WHERE id=?", (sid,)).fetchone()
                 if not s:
                     continue
-                if single and any([kfs, cfs, pfs, mfs, date_from, date_to]):
-                    w, p = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to)
+                if single and any([kfs, cfs, pfs, mfs, cofs, date_from, date_to]):
+                    w, p = _match_where(sid, kfs, cfs, pfs, mfs, date_from, date_to, cofs)
                     matches = jd.execute(f"SELECT * FROM matches WHERE {w} ORDER BY timestamp ASC", p).fetchall()
                 else:
                     matches = jd.execute(
@@ -2319,6 +2342,7 @@ def create_app() -> Flask:
         cfs       = request.form.getlist('ch')
         pfs       = request.form.getlist('prog')
         mfs       = request.form.getlist('mt')
+        cofs      = request.form.getlist('co')
         date_from = request.form.get('date_from', '')
         date_to   = request.form.get('date_to', '')
         single    = len(valid_ids) == 1
@@ -2329,7 +2353,7 @@ def create_app() -> Flask:
         job_id = cur.lastrowid
 
         threading.Thread(target=_run_export_job, daemon=True, name=f'export-{job_id}',
-                          args=(job_id, valid_ids, single, kfs, cfs, pfs, mfs, date_from, date_to)).start()
+                          args=(job_id, valid_ids, single, kfs, cfs, pfs, mfs, date_from, date_to, cofs)).start()
         return redirect(url_for('export_status', job_id=job_id))
 
     @app.route('/export/<int:job_id>')

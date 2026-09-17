@@ -186,6 +186,11 @@ def fetch_articles(query: str, date_from: str | None = None, date_to: str | None
             # los resultados (ver alerts/watcher.py:_poll_articles_for_search
             # y alerts/channel_types.py MEDIA_TYPE_SUBFILTERS).
             'channel_id':    GDELT_MX_CHANNEL_ID if _is_mexican(art) else GDELT_CHANNEL_ID,
+            # sourcecountry ya viene gratis con cada artículo -- antes se
+            # usaba solo para _is_mexican() y se descartaba. Se guarda para
+            # mostrar de dónde es cada medio en "top canales" (ver
+            # alerts/media_countries.py y alerts/watcher.py).
+            'country':       (art.get('sourcecountry') or '').strip() or None,
         })
     return out
 

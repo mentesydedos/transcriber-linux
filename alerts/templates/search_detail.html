@@ -7,6 +7,7 @@
 {% for c in cfs %}<input type="hidden" name="ch"   value="{{ c }}">{% endfor %}
 {% for p in pfs %}<input type="hidden" name="prog" value="{{ p }}">{% endfor %}
 {% for m in mfs %}<input type="hidden" name="mt"   value="{{ m }}">{% endfor %}
+{% for o in cofs %}<input type="hidden" name="co"   value="{{ o }}">{% endfor %}
 {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
 {% if date_to   %}<input type="hidden" name="date_to"   value="{{ date_to }}">{% endif %}
 {% endmacro %}
@@ -37,20 +38,20 @@
     <form method="post" action="/searches/{{ s.id }}/report">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-envelope me-1"></i>Enviar reporte{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-envelope me-1"></i>Enviar reporte{% if kfs or cfs or pfs or mfs or cofs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <form method="post" action="/searches/{{ s.id }}/report_telegram">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-telegram me-1" style="color:#2aabee"></i>Reporte Telegram{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-telegram me-1" style="color:#2aabee"></i>Reporte Telegram{% if kfs or cfs or pfs or mfs or cofs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <form method="post" action="/export">
       <input type="hidden" name="search_ids" value="{{ s.id }}">
       {{ filter_inputs() }}
       <button class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or mfs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
+        <i class="bi bi-file-earmark-excel me-1" style="color:#1d6f42"></i>Descargar Excel{% if kfs or cfs or pfs or mfs or cofs or date_from or date_to %} <span style="font-size:.7rem;color:var(--accent)">(filtrado)</span>{% endif %}
       </button>
     </form>
     <a href="/searches/{{ s.id }}/similarities" class="btn btn-sm btn-outline-secondary">
@@ -173,7 +174,7 @@
   <div class="col-6 col-md-3">
     <div class="stat">
       <div class="stat-val" style="color:var(--orange)" id="total-count">{{ total_all }}</div>
-      {% set any_filter = kfs or cfs or pfs or mfs or date_from or date_to %}
+      {% set any_filter = kfs or cfs or pfs or mfs or cofs or date_from or date_to %}
       {% if any_filter %}
       <div class="stat-lbl">
         Total · <span style="color:var(--accent);font-weight:700">{{ total }} filtrado{{ 's' if total != 1 }}</span>
@@ -254,8 +255,13 @@
         {% set max_ch = ch_stats[0].cnt if ch_stats else 1 %}
         {% for ch in ch_stats %}
         <div class="d-flex align-items-center gap-2 mb-2">
-          <div style="min-width:130px;font-size:.82rem;color:var(--green);font-weight:600">
-            {{ ch.channel_name[:20] }}
+          <div style="width:130px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+               margin-right:.75rem;font-size:.82rem;color:var(--green);font-weight:600" title="{{ ch.channel_name }}">
+            {{ ch.channel_name }}
+          </div>
+          <div style="width:100px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+               font-size:.72rem;color:var(--muted)" title="{{ ch.channel_country or '' }}">
+            {{ ch.channel_country or '' }}
           </div>
           <div style="flex:1;background:var(--card2);border-radius:4px;height:8px;overflow:hidden">
             {% set pct = (ch.cnt / max_ch * 100) | int %}
@@ -295,7 +301,7 @@
         Coincidencias
         <span class="ms-1 px-2 py-0 rounded" style="background:var(--card2);font-size:.8rem" id="total-badge">{{ total }}</span>
       </span>
-      {% set any_filter = kfs or cfs or pfs or mfs or date_from or date_to %}
+      {% set any_filter = kfs or cfs or pfs or mfs or cofs or date_from or date_to %}
       {% if any_filter %}
         <a href="/searches/{{ s.id }}" class="btn btn-sm btn-outline-secondary">
           <i class="bi bi-x-circle me-1"></i>Limpiar filtros
@@ -356,6 +362,31 @@
           {% endfor %}
         </div>
       </div>
+
+      <!-- País (multi) -- solo aplica a Google Noticias/GDELT, ver
+           alerts/media_countries.py; una búsqueda solo de TV/radio no
+           tiene ningún país guardado, así que el dropdown ni aparece. -->
+      {% if co_all %}
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" id="btn-co">
+          {% if cofs %}País ({{ cofs|length }}){% else %}País{% endif %}
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:180px;max-height:240px;overflow-y:auto">
+          {% for o in co_all %}
+          <div class="form-check">
+            <input class="form-check-input fcheck" type="checkbox" name="co"
+                   value="{{ o.channel_country }}" id="co{{ loop.index }}"
+                   data-btn="btn-co" data-label="País"
+                   {{ 'checked' if o.channel_country in cofs }}>
+            <label class="form-check-label" for="co{{ loop.index }}" style="font-size:.82rem">
+              {{ o.channel_country }}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
 
       <!-- Medio (multi) -->
       {% if mt_all|length > 1 %}
@@ -520,7 +551,7 @@
         <tr>
           <td colspan="7" class="text-center py-5" style="color:var(--muted)">
             <i class="bi bi-lightning d-block" style="font-size:2rem;margin-bottom:.5rem"></i>
-            Sin coincidencias{% if kfs or cfs or pfs or mfs or date_from or date_to %} con estos filtros{% endif %}
+            Sin coincidencias{% if kfs or cfs or pfs or mfs or cofs or date_from or date_to %} con estos filtros{% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -673,7 +704,7 @@
 })();
 </script>
 {% endif %}
-<script id="active-filters" type="application/json">{{ {"kw": kfs, "ch": cfs, "prog": pfs, "mt": mfs, "date_from": date_from, "date_to": date_to} | tojson }}</script>
+<script id="active-filters" type="application/json">{{ {"kw": kfs, "ch": cfs, "prog": pfs, "mt": mfs, "co": cofs, "date_from": date_from, "date_to": date_to} | tojson }}</script>
 <script>
 // Live auto-refresh: poll for new matches every 8 seconds
 (function() {
@@ -701,6 +732,7 @@
     (activeFilters.ch   || []).forEach(v => p.append('ch', v));
     (activeFilters.prog || []).forEach(v => p.append('prog', v));
     (activeFilters.mt   || []).forEach(v => p.append('mt', v));
+    (activeFilters.co   || []).forEach(v => p.append('co', v));
     if (activeFilters.date_from) p.set('date_from', activeFilters.date_from);
     if (activeFilters.date_to)   p.set('date_to', activeFilters.date_to);
     return p.toString();
