@@ -3,6 +3,7 @@ alerts/watcher.py — Hilo de fondo que monitorea transcripciones y dispara aler
 Corre cada POLL_INTERVAL segundos. Lee transcriptions.db, cruza contra búsquedas
 activas, guarda coincidencias y dispara correos según el modo de entrega.
 """
+import functools
 import html
 import json
 import os
@@ -100,14 +101,44 @@ def _phonetic_es(text: str) -> str:
     t = re.sub(r'x', 'ks', t)          # x → ks
     return t
 
-def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) -> bool:
-    """whole_word exige que la keyword aparezca delimitada por separadores de
-    palabra (no dentro de una palabra compuesta, ej. "día" no debe casar con
-    "diálogo" ni "mediodía"). Se comprueba con límites \\w sobre el mismo
-    texto normalizado en ambos lados (keyword y texto), así que es seguro
-    aunque la normalización fonética cambie longitudes de palabra.
+def _normalize_text(text: str, phonetic: bool) -> str:
+    """Sin cache -- a diferencia de la keyword (ver _normalize_keyword), el
+    texto de cada fila es siempre distinto, cachearlo no ahorraría nada y
+    solo desperdiciaría memoria."""
+    return _phonetic_es(text) if phonetic else _strip_accents(text)
 
-    keyword puede ser compuesta -- varios términos unidos con "+" (ej.
+
+@functools.lru_cache(maxsize=4096)
+def _normalize_keyword(keyword: str, phonetic: bool) -> str:
+    """La keyword (o cada término de una compuesta, o cada palabra de
+    exclusión) es SIEMPRE la misma durante todo un backfill o el ciclo en
+    vivo -- millones de filas, el mismo puñado de keywords -- así que aquí
+    sí vale la pena cachear (a diferencia del texto, ver _normalize_text).
+    maxsize=4096 es de sobra: nunca va a haber tantas keywords/exclusiones
+    distintas activas a la vez como para desalojar algo útil."""
+    return _phonetic_es(keyword) if phonetic else _strip_accents(keyword)
+
+
+@functools.lru_cache(maxsize=4096)
+def _whole_word_regex(norm_term: str) -> re.Pattern:
+    return re.compile(r'(?<!\w)' + re.escape(norm_term) + r'(?!\w)')
+
+
+def _term_matches_normalized(norm_text: str, term: str, phonetic: bool, whole_word: bool) -> bool:
+    """Compara un término suelto (ya sin "+") contra un texto YA
+    normalizado -- separado de _match para que un texto se pueda normalizar
+    UNA sola vez y reusarse contra varios términos (ver _matching_keywords/
+    _excluded), en vez de renormalizarlo por cada uno."""
+    norm_term = _normalize_keyword(term, phonetic)
+    if not norm_term:
+        return False
+    if whole_word:
+        return _whole_word_regex(norm_term).search(norm_text) is not None
+    return norm_term in norm_text
+
+
+def _match_normalized(norm_text: str, keyword: str, phonetic: bool, whole_word: bool) -> bool:
+    """keyword puede ser compuesta -- varios términos unidos con "+" (ej.
     "homicidio+juan") que deben aparecer TODOS en el mismo texto, en
     cualquier orden y sin necesidad de estar juntos -- a diferencia de una
     keyword normal de varias palabras ("claudia sheinbaum"), que sí exige
@@ -115,25 +146,45 @@ def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) ->
     reglas (phonetic/whole_word) y se exige que TODOS matcheen."""
     if '+' in keyword:
         terms = [t.strip() for t in keyword.split('+') if t.strip()]
-        return bool(terms) and all(_match(text, t, phonetic, whole_word) for t in terms)
-    norm_text = _phonetic_es(text)    if phonetic else _strip_accents(text)
-    norm_kw   = _phonetic_es(keyword) if phonetic else _strip_accents(keyword)
-    if not norm_kw:
-        return False
-    if whole_word:
-        return re.search(r'(?<!\w)' + re.escape(norm_kw) + r'(?!\w)', norm_text) is not None
-    return norm_kw in norm_text
+        return bool(terms) and all(
+            _term_matches_normalized(norm_text, t, phonetic, whole_word) for t in terms)
+    return _term_matches_normalized(norm_text, keyword, phonetic, whole_word)
+
+
+def _match(text: str, keyword: str, phonetic: bool, whole_word: bool = False) -> bool:
+    """whole_word exige que la keyword aparezca delimitada por separadores de
+    palabra (no dentro de una palabra compuesta, ej. "día" no debe casar con
+    "diálogo" ni "mediodía"). Se comprueba con límites \\w sobre el mismo
+    texto normalizado en ambos lados (keyword y texto), así que es seguro
+    aunque la normalización fonética cambie longitudes de palabra.
+
+    Para comparar un mismo texto contra VARIAS keywords (el caso normal en
+    _backfill_channel y el ciclo en vivo), usar _matching_keywords en vez de
+    llamar esto en un loop -- así el texto se normaliza una sola vez."""
+    return _match_normalized(_normalize_text(text, phonetic), keyword, phonetic, whole_word)
+
+
+def _matching_keywords(text: str, keywords: list[str], phonetic: bool, whole_word: bool) -> list[str]:
+    """Equivalente a [kw for kw in keywords if _match(text, kw, phonetic,
+    whole_word)] pero normaliza el texto UNA sola vez para todas las
+    keywords en vez de una vez por cada una -- con varias keywords sobre
+    millones de filas (backfill histórico, ciclo en vivo) la diferencia es
+    real, ver conversación del 2026-09-17 sobre tiempos de búsqueda."""
+    norm_text = _normalize_text(text, phonetic)
+    return [kw for kw in keywords if _match_normalized(norm_text, kw, phonetic, whole_word)]
 
 
 def _excluded(text: str, exclude_words: list[str], phonetic: bool, whole_word: bool) -> bool:
     """True si alguna palabra de exclusión aparece en el MISMO texto que
     disparó el match -- ej. buscar "rocha" (sin whole_word, o incluso con
     phonetic) excluyendo "reprochar"/"derrochar" (que contienen "rocha"
-    como substring). Reusa _match con las mismas opciones de la búsqueda
-    para que la exclusión sea consistente con cómo se detectó el match."""
+    como substring). Misma normalización que _match para que la exclusión
+    sea consistente con cómo se detectó el match; normaliza el texto UNA
+    vez para todas las exclude_words, ver _matching_keywords."""
     if not exclude_words:
         return False
-    return any(_match(text, ex, phonetic, whole_word) for ex in exclude_words)
+    norm_text = _normalize_text(text, phonetic)
+    return any(_term_matches_normalized(norm_text, ex, phonetic, whole_word) for ex in exclude_words)
 
 
 DEDUP_WINDOW_SEC = 60  # "1 minuto de espacio por canal" -- ver dedup_channel en searches
@@ -582,10 +633,9 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
             for offset, text in segments:
                 if _excluded(text, exclude_words, bool(s['phonetic']), bool(s['whole_word'])):
                     continue
-                for kw2 in keywords:
-                    if _match(text, kw2, bool(s['phonetic']), bool(s['whole_word'])):
-                        kw_occurrences[kw2] = kw_occurrences.get(kw2, 0) + 1
-                        first_seg.setdefault(kw2, (offset, text))
+                for kw2 in _matching_keywords(text, keywords, bool(s['phonetic']), bool(s['whole_word'])):
+                    kw_occurrences[kw2] = kw_occurrences.get(kw2, 0) + 1
+                    first_seg.setdefault(kw2, (offset, text))
 
             if dedup_on and first_seg:
                 # Un video es contenido fijo, no un canal en vivo -- a
@@ -622,13 +672,22 @@ def _poll_youtube_for_search(adb, s, keywords: list[str], exclude_words: list[st
 def _backfill_channel(args):
     """Corre en un proceso worker aparte (ver ProcessPoolExecutor en
     _process). Procesa TODO el rango de fechas de UN solo canal, en orden
-    cronológico (ORDER BY id ASC, que en transcriptions.db equivale a orden
-    de timestamp dentro de un mismo canal) -- necesario para que
-    _recent_match_exists seguya viendo, al momento de cada fila, todas las
-    coincidencias de ESE canal ya insertadas antes en el tiempo. No hace
-    falta coordinarse con los demás workers: dedup es por (search_id,
-    keyword, channel_id), así que un canal nunca depende de lo que otro
-    canal esté insertando.
+    cronológico -- necesario para que _recent_match_exists siga viendo, al
+    momento de cada fila, todas las coincidencias de ESE canal ya
+    insertadas antes en el tiempo. No hace falta coordinarse con los demás
+    workers: dedup es por (search_id, keyword, channel_id), así que un
+    canal nunca depende de lo que otro canal esté insertando.
+
+    Pagina por (timestamp, id) en vez de por id -- el único índice que
+    existe es (channel_id, timestamp) (ver transcriptions.db), así que
+    paginar por id obligaba a SQLite a volcar TODO lo que quedaba del rango
+    en una tabla temporal para reordenarlo en cada tanda (EXPLAIN QUERY
+    PLAN: "USE TEMP B-TREE FOR ORDER BY"), cada vez más caro mientras más
+    tandas faltaban. Paginando por timestamp la consulta lee directo del
+    índice sin ese reordenamiento -- medido en el canal con más historial
+    (305 mil filas, ~5 meses): 5.0s -> 2.3s solo de tiempo de consulta (ver
+    conversación del 2026-09-17 sobre tiempos de búsqueda). id como
+    desempate de timestamps iguales, no para el orden en sí.
 
     Abre sus propias conexiones a las DB -- sqlite3 no se puede compartir
     entre procesos (a diferencia de entre hilos)."""
@@ -638,25 +697,27 @@ def _backfill_channel(args):
     tdb = _tdb()
     adb = _adb()
     BATCH = 2000
-    last_id  = 0
-    n_done   = 0
+    last_ts = date_start + ' 00:00:00'
+    last_id = 0
+    n_done  = 0
     try:
         while True:
             hist = tdb.execute("""
                 SELECT id, channel_id, channel_name, timestamp, text, has_music
                 FROM transcriptions
-                WHERE id > ? AND channel_id = ?
-                  AND timestamp >= ? AND timestamp <= ?
-                ORDER BY id ASC
+                WHERE channel_id = ?
+                  AND (timestamp > ? OR (timestamp = ? AND id > ?))
+                  AND timestamp <= ?
+                ORDER BY timestamp ASC, id ASC
                 LIMIT ?
-            """, (last_id, channel_id, date_start + ' 00:00:00', date_end + ' 23:59:59', BATCH)).fetchall()
+            """, (channel_id, last_ts, last_ts, last_id, date_end + ' 23:59:59', BATCH)).fetchall()
             if not hist:
                 break
             for row in hist:
                 text = row['text'] or ''
                 if text and text != '[~]' and not (exclude_music and 'has_music' in row.keys() and row['has_music']) \
                         and not _excluded(text, exclude_words, phonetic, whole_word):
-                    matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
+                    matching_kws = _matching_keywords(text, keywords, phonetic, whole_word)
                     if dedup_on:
                         matching_kws = matching_kws[:1]
                     for kw in matching_kws:
@@ -668,6 +729,7 @@ def _backfill_channel(args):
                             VALUES (?,?,?,?,?,?,?)""",
                             (search_id, kw, channel_id, row['channel_name'], row['timestamp'], ctx,
                              int(row['has_music']) if 'has_music' in row.keys() else 0))
+            last_ts = hist[-1]['timestamp']
             last_id = hist[-1]['id']
             n_done += len(hist)
             adb.execute("UPDATE searches SET init_rows_done = init_rows_done + ? WHERE id=?",
@@ -894,7 +956,7 @@ def _process(adb, tdb, smtp, cfg=None):
                 # Ver mismo comentario en el bloque de histórico más arriba --
                 # con dedup_on, varias keywords que matchean el mismo
                 # fragmento cuentan como una sola coincidencia.
-                matching_kws = [kw for kw in keywords if _match(text, kw, phonetic, whole_word)]
+                matching_kws = _matching_keywords(text, keywords, phonetic, whole_word)
                 if dedup_on:
                     matching_kws = matching_kws[:1]
                 for kw in matching_kws:
