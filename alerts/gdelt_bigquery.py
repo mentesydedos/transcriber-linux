@@ -261,6 +261,16 @@ def _query_gkg(client, kw_regexes: list[str], dt_from: datetime, dt_to: datetime
         return []
 
 
+# Profundidad hasta la que se paraliza la bisección (2 hilos por nivel,
+# cada uno con su propio ThreadPoolExecutor de vida corta -- no uno
+# compartido, para no arriesgar un deadlock si un hilo recursivo tuviera
+# que esperar un turno libre en el mismo pool que lo está ejecutando).
+# Más allá de esto ya no vale la pena: las ventanas son chicas y el costo
+# de más hilos no compensa. BigQuery Client es seguro para consultas
+# concurrentes (cada .query() dispara su propio job).
+BISECT_PARALLEL_MAX_DEPTH = 3
+
+
 def _query_gkg_bisect(client, kw_regexes: list[str], dt_from: datetime, dt_to: datetime, _depth: int = 0) -> list:
     """Si la consulta topa ROW_LIMIT, ORDER BY DATE DESC descarta en
     silencio todo lo más viejo de la ventana -- para una palabra frecuente
@@ -268,14 +278,22 @@ def _query_gkg_bisect(client, kw_regexes: list[str], dt_from: datetime, dt_to: d
     completas en el mapa de calor, no porque no hubiera cobertura sino
     porque se cortaba. Se bisecta el rango de tiempo a la mitad y se repite
     hasta que quepa completo o hasta MIN_BISECT_MINUTES (piso real de
-    actualización del GKG)."""
+    actualización del GKG). Las primeras BISECT_PARALLEL_MAX_DEPTH
+    bisecciones corren en paralelo (BigQuery no tiene límite de tasa, a
+    diferencia del DOC API de alerts/gdelt.py)."""
     rows = _query_gkg(client, kw_regexes, dt_from, dt_to)
     span_min = (dt_to - dt_from).total_seconds() / 60
     if len(rows) < ROW_LIMIT or span_min <= MIN_BISECT_MINUTES or _depth > 20:
         return rows
     mid = dt_from + (dt_to - dt_from) / 2
-    left  = _query_gkg_bisect(client, kw_regexes, dt_from, mid, _depth + 1)
-    right = _query_gkg_bisect(client, kw_regexes, mid, dt_to, _depth + 1)
+    if _depth < BISECT_PARALLEL_MAX_DEPTH:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_left  = pool.submit(_query_gkg_bisect, client, kw_regexes, dt_from, mid, _depth + 1)
+            fut_right = pool.submit(_query_gkg_bisect, client, kw_regexes, mid, dt_to, _depth + 1)
+            left, right = fut_left.result(), fut_right.result()
+    else:
+        left  = _query_gkg_bisect(client, kw_regexes, dt_from, mid, _depth + 1)
+        right = _query_gkg_bisect(client, kw_regexes, mid, dt_to, _depth + 1)
     return left + right
 
 

@@ -28,6 +28,7 @@ vacías (logueado como error), sin tumbar el resto del watcher.
 """
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -90,17 +91,23 @@ def _is_mexican(art: dict) -> bool:
     return (art.get('domain') or '').strip().lower().endswith('.mx')
 
 _last_request_ts = 0.0
+_throttle_lock = threading.Lock()
 
 
 def _throttle():
     """Espera lo necesario para no exceder 1 consulta cada _RATE_LIMIT_SEC
     -- global al proceso, no por keyword, porque el límite es del endpoint,
-    no de la búsqueda."""
+    no de la búsqueda. Con lock porque alerts/watcher.py ahora corre el
+    fetch de GDELT en un hilo aparte (en paralelo con el de BigQuery, ver
+    _poll_gdelt_for_search) -- sin el lock, dos hilos podrían leer
+    _last_request_ts antes de que ninguno lo actualice y disparar dos
+    consultas casi juntas, justo lo que este throttle existe para evitar."""
     global _last_request_ts
-    wait = _RATE_LIMIT_SEC - (time.time() - _last_request_ts)
-    if wait > 0:
-        time.sleep(wait)
-    _last_request_ts = time.time()
+    with _throttle_lock:
+        wait = _RATE_LIMIT_SEC - (time.time() - _last_request_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_ts = time.time()
 
 
 def fetch_articles(query: str, date_from: str | None = None, date_to: str | None = None,

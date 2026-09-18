@@ -12,7 +12,7 @@ import threading
 import time
 import unicodedata
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from pathlib  import Path
 
@@ -292,38 +292,52 @@ def _with_context_chunks(tdb, channel_id: int, timestamp: str, text: str) -> str
 
 
 # ── Google Noticias ───────────────────────────────────────────────────────────
-def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None,
-                               date_from: str | None, date_to: str | None,
-                               fetch_one, fetch_range, channel_id: int) -> int:
-    """Lógica compartida entre Google Noticias y GDELT (ambas fuentes son
-    "keyword -> lista de artículos", ver alerts/googlenews.py y
-    alerts/gdelt.py -- mismo shape de artículo, mismo problema de tope por
-    consulta con sesgo a lo reciente, misma solución de bisección). Guarda
-    los artículos nuevos como matches (channel_name=fuente real del
-    artículo). date_from/date_to acotan (fetch histórico inicial); sin
-    fecha trae lo más reciente. exclude_words descarta el artículo si su
-    título contiene alguna palabra excluida.
+def _fetch_keyword_articles(keywords: list[str], date_from: str | None, date_to: str | None,
+                             fetch_one, fetch_range, parallel: bool = False) -> list:
+    """Solo la parte de red de _apply_fetched_articles (nada de adb) --
+    separada para poder correrla en hilos sin tocar sqlite desde ahí (las
+    conexiones sqlite3 no son seguras entre hilos). Devuelve
+    [(keyword, [articulo, ...]), ...], mismo orden que keywords.
 
-    Cada keyword dispara su PROPIA búsqueda (fetch_one/fetch_range se llama
-    una vez por keyword) -- si la búsqueda tiene varias keywords que se
-    solapan (ej. "rocha", "rocha moya"), el MISMO artículo real aparece en
-    más de un resultado. Se dedupea por link Y por (título, fuente) -- el
-    link de estas fuentes puede ser una URL de redirección que varía entre
-    una búsqueda y otra para el MISMO artículo real, así que el link solo
-    no basta. A diferencia de TV/radio, aquí no depende de dedup_channel:
-    es siempre el mismo artículo, nunca hay razón legítima de guardarlo dos
-    veces."""
+    parallel=True dispara fetch_one/fetch_range de TODAS las keywords a la
+    vez en hilos -- solo seguro para fuentes SIN límite de tasa propio
+    (BigQuery). El DOC API de GDELT (alerts/gdelt.py) sí tiene uno real
+    (1 consulta/5s, ver _RATE_LIMIT_SEC) impuesto por el lado de GDELT, así
+    que para esa fuente siempre se llama con parallel=False (secuencial,
+    como siempre) -- paralelizarlo arriesgaría el bloqueo temporal que ya
+    nos pasó una vez por exceso de pruebas."""
+    def _one(kw):
+        if date_from and date_to and date_from != date_to:
+            return kw, fetch_range(kw, date_from, date_to)
+        return kw, fetch_one(kw, date_from=date_from, date_to=date_to)
+
+    if parallel and len(keywords) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(keywords), 8)) as pool:
+            return list(pool.map(_one, keywords))
+    return [_one(kw) for kw in keywords]
+
+
+def _apply_fetched_articles(adb, s, kw_articles: list, exclude_words: list[str] | None,
+                             channel_id: int) -> int:
+    """Guarda los artículos nuevos como matches (channel_name=fuente real
+    del artículo). exclude_words descarta el artículo si su título contiene
+    alguna palabra excluida. Siempre de un solo hilo (usa adb).
+
+    kw_articles es [(keyword, [articulo, ...]), ...] -- ver
+    _fetch_keyword_articles. Si varias keywords se solapan (ej. "rocha",
+    "rocha moya"), el MISMO artículo real aparece en más de un resultado.
+    Se dedupea por link Y por (título, fuente) -- el link de estas fuentes
+    puede ser una URL de redirección que varía entre una búsqueda y otra
+    para el MISMO artículo real, así que el link solo no basta. A
+    diferencia de TV/radio, aquí no depende de dedup_channel: es siempre el
+    mismo artículo, nunca hay razón legítima de guardarlo dos veces."""
     phonetic   = bool(s['phonetic'])
     whole_word = bool(s['whole_word'])
     total = 0
     seen_links  = set()
     seen_titles = set()
 
-    for kw in keywords:
-        if date_from and date_to and date_from != date_to:
-            articles = fetch_range(kw, date_from, date_to)
-        else:
-            articles = fetch_one(kw, date_from=date_from, date_to=date_to)
+    for kw, articles in kw_articles:
         for art in articles:
             title_key = (art['title'], art['source'])
             if art['link'] in seen_links or title_key in seen_titles:
@@ -365,6 +379,18 @@ def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[s
     return total
 
 
+def _poll_articles_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None,
+                               date_from: str | None, date_to: str | None,
+                               fetch_one, fetch_range, channel_id: int) -> int:
+    """Fetch (secuencial, una keyword a la vez) + guardado -- ver
+    _fetch_keyword_articles/_apply_fetched_articles. Usado por Google
+    Noticias (sin límite de tasa propio pero tampoco necesidad de
+    paralelizar: ya es rápido). GDELT arma su propio fetch en paralelo
+    aparte, ver _poll_gdelt_for_search."""
+    kw_articles = _fetch_keyword_articles(keywords, date_from, date_to, fetch_one, fetch_range)
+    return _apply_fetched_articles(adb, s, kw_articles, exclude_words, channel_id)
+
+
 def _poll_news_for_search(adb, s, keywords: list[str], exclude_words: list[str] | None = None,
                            date_from: str | None = None, date_to: str | None = None) -> int:
     """Google Noticias -- ver _poll_articles_for_search. El RSS tope en
@@ -394,10 +420,21 @@ def _poll_gdelt_for_search(adb, s, keywords: list[str], exclude_words: list[str]
     - DOC API (alerts/gdelt.py): búsqueda de texto completo real, pero con
       tope de 250/consulta y rate limit propio (1 consulta/5s) -- tolerable
       porque el poll ya corre cada GDELT_POLL_MINUTES, no en cada ciclo.
-    Sin credenciales de BigQuery, corre solo el DOC API (como siempre)."""
-    total = 0
+    Sin credenciales de BigQuery, corre solo el DOC API (como siempre).
+
+    El FETCH de ambas fuentes (solo red, sin tocar adb) corre en paralelo
+    en dos hilos -- son servicios independientes, no comparten límite de
+    tasa, así que el tiempo total baja de suma(BQ, DOC) a max(BQ, DOC). El
+    fetch de BigQuery además dispara todas sus keywords a la vez (sin
+    límite de tasa propio); el del DOC API se mantiene 100% secuencial
+    puertas adentro (1 keyword a la vez, respetando su _RATE_LIMIT_SEC real
+    -- paralelizarlo arriesgaría otro bloqueo temporal como el que ya
+    tuvimos). El GUARDADO (sí toca adb) se hace después, ya sin hilos, uno
+    a la vez -- sqlite3 no es seguro entre hilos."""
     row = adb.execute("SELECT value FROM settings WHERE key='bigquery_credentials_json'").fetchone()
-    if row and row['value']:
+    bq_enabled = bool(row and row['value'])
+
+    def _fetch_bq():
         from alerts.gdelt_bigquery import fetch_articles as bq_fetch, fetch_articles_range as bq_fetch_range
         # BigQuery cobra por partición de día escaneada, no por lo nuevo que
         # haya de verdad -- sin esto, cada poll (cada 30 min) volvía a leer
@@ -412,10 +449,27 @@ def _poll_gdelt_for_search(adb, s, keywords: list[str], exclude_words: list[str]
             today = datetime.now().strftime('%Y-%m-%d')
             bq_date_from = last_fetch[:10] if last_fetch else today
             bq_date_to = today
-        total += _poll_articles_for_search(adb, s, keywords, exclude_words, bq_date_from, bq_date_to,
-                                            bq_fetch, bq_fetch_range, GDELT_CHANNEL_ID)
-    total += _poll_articles_for_search(adb, s, keywords, exclude_words, date_from, date_to,
-                                        gdelt_fetch, gdelt_fetch_range, GDELT_CHANNEL_ID)
+        return _fetch_keyword_articles(keywords, bq_date_from, bq_date_to,
+                                        bq_fetch, bq_fetch_range, parallel=True)
+
+    def _fetch_doc():
+        return _fetch_keyword_articles(keywords, date_from, date_to,
+                                        gdelt_fetch, gdelt_fetch_range, parallel=False)
+
+    if bq_enabled:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_bq = pool.submit(_fetch_bq)
+            fut_doc = pool.submit(_fetch_doc)
+            bq_kw_articles = fut_bq.result()
+            doc_kw_articles = fut_doc.result()
+    else:
+        bq_kw_articles = None
+        doc_kw_articles = _fetch_doc()
+
+    total = 0
+    if bq_kw_articles is not None:
+        total += _apply_fetched_articles(adb, s, bq_kw_articles, exclude_words, GDELT_CHANNEL_ID)
+    total += _apply_fetched_articles(adb, s, doc_kw_articles, exclude_words, GDELT_CHANNEL_ID)
     return total
 
 

@@ -390,6 +390,13 @@ _SECOND_PASS = {
     'acustiknoticias.com': 'México', 'diario-red.com': 'España', 'lineadecontraste.com': 'México',
     'eslocotidiano.com': 'México', 'emsavalles.com': 'México', 'futbolsapiens.com': 'México',
     'elpreg.org': 'Estados Unidos', 'somoselmedio.com': 'México', 'josecardenas.com': 'México',
+    # Afiliadas de Telemundo/NBC y otros verificados (2026-09-17)
+    'telemundo20.com': 'Estados Unidos', 'telemundonashville.com': 'Estados Unidos',
+    'nbclosangeles.com': 'Estados Unidos', 'quintanaroohoy.com': 'México',
+    'quien.com': 'México', 'dallasnews.com': 'Estados Unidos', 'fayerwayer.com': 'Chile',
+    'kawc.org': 'Estados Unidos', 'ivpressonline.com': 'Estados Unidos', 'highrivertimes.com': 'Canadá',
+    'elchiltepin.com': 'México', 'ahoratabasco.com': 'México', 'conectaarizona.com': 'Estados Unidos',
+    'elrespetable.com': 'México',
 }
 for _d, _c in _SECOND_PASS.items():
     DOMAIN_COUNTRY.setdefault(_d[4:] if _d.startswith('www.') else _d, _c)
@@ -427,6 +434,28 @@ SOCIAL_DOMAINS = {'facebook.com', 'instagram.com'}
 PAGE_NAME_COUNTRY = {
     'milenio': 'México', 'el universal': 'México', 'claudia sheinbaum pardo': 'México',
     'rocío nahle': 'México', 'bi noticias': 'México', 'exitosa noticias': 'Perú',
+    'telemundo atlanta': 'Estados Unidos',
+    # Resueltos con navegador real (Playwright) siguiendo el enlace de
+    # Google Noticias hasta la publicación real -- el nombre viene del
+    # slug de la URL de Facebook/Instagram (facebook.com/<slug>/...), por
+    # eso llegan pegados/sin espacios, distinto a los de arriba (extraídos
+    # del texto de la publicación). Ver alerts/media_countries.py
+    # docstring y la conversación del 2026-09-17 sobre por qué se necesitó
+    # un navegador real (el enlace no se puede decodificar solo con HTTP).
+    'mileniodiario': 'México', 'eluniversal': 'México', 'exitosanoticias': 'Perú',
+    'rocionahle': 'México', 'binoticiasags': 'México', 'claudiasheinbaumpardo': 'México',
+    'elheraldodesaltillo': 'México', 'fiscaliagoboax': 'México',
+    'infobaeespana': 'España', 'diariodecuba': 'España',
+    'vtv_canal8': 'Venezuela', 'bbcnewsmundo': 'Reino Unido',
+    # Estos llegaron vía el respaldo og:title (publicaciones de Instagram,
+    # que no traen el usuario en la URL) y por eso el nombre queda con
+    # espacios/mayúsculas normales en vez del slug de URL -- son cuentas
+    # distintas de las de arriba aunque el medio sea el mismo.
+    'vtv canal 8': 'Venezuela',
+    # "Diario Expreso" existe en Perú y Ecuador; confirmado Perú revisando
+    # el contenido real de las publicaciones (Keiko Fujimori, sismo en
+    # Ayacucho, deslizamientos en Arequipa -- todas noticias peruanas).
+    'diario expreso': 'Perú',
 }
 _PAGE_NAME_RE = re.compile(r'^([^.]{2,40})\.\s*\.\s*')
 
